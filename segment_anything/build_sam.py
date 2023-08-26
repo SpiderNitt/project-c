@@ -77,6 +77,11 @@ def _build_sam(
             global_attn_indexes=encoder_global_attn_indexes,
             window_size=14,
             out_chans=prompt_embed_dim,
+            adapter_width = 384,
+            adapter_layers = 12,
+            adapter_kernel_size = (3,1,1),
+            adapter_pre_attn = False,
+            adapter_pre_mlp = True,
         ),
         prompt_encoder=PromptEncoder(
             embed_dim=prompt_embed_dim,
@@ -103,5 +108,5 @@ def _build_sam(
     if checkpoint is not None:
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f)
-        sam.load_state_dict(state_dict)
+        sam.load_state_dict(state_dict,strict=False)
     return sam

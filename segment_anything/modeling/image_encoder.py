@@ -7,10 +7,56 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import functools
+import math
 from typing import Optional, Tuple, Type
 
 from .common import LayerNorm2d, MLPBlock
+DWCONV3D_DISABLE_CUDNN = True
+class Adapter(nn.Module):
+
+    def __init__(self, in_channels, adapter_channels, kernel_size):
+        super().__init__()
+        self.fc1 = nn.Linear(in_channels, adapter_channels)
+        self.conv = nn.Conv3d(
+            adapter_channels, adapter_channels,
+            kernel_size=kernel_size,
+            stride=(1, 1, 1),
+            padding=tuple(x // 2 for x in kernel_size),
+            groups=adapter_channels,
+        )
+        self.fc2 = nn.Linear(adapter_channels, in_channels)
+        # nn.init.constant_(self.conv.weight, 0.)
+        # nn.init.constant_(self.conv.bias, 0.)
+        # nn.init.constant_(self.fc1.bias, 0.)
+        # nn.init.constant_(self.fc2.bias, 0.)
+
+    def forward(self, x, T):
+        print(f'Adapter_T {T}')
+        print(f'Adapter_input {x.shape}')
+        x = x.flatten(1,2)
+        BT, L, C = x.size()
+        B = BT // T
+        Ca = self.conv.in_channels
+        H = W = round(math.sqrt(L))
+        # print (f'H {H} W {W} L-1 {L-1}')
+        assert L  == H * W
+        x_id = x
+        print(f'x_id_shape {x_id.shape}')
+        x = x[:, :, :] 
+        x = self.fc1(x)
+        print(f'x_shape {x.shape}')
+        x = x.view(B, T, H, W, Ca).permute(0, 4, 1, 2, 3).contiguous()
+
+        cudnn_enabled = torch.backends.cudnn.enabled
+        torch.backends.cudnn.enabled = cudnn_enabled and DWCONV3D_DISABLE_CUDNN
+        x = self.conv(x)
+        torch.backends.cudnn.enabled = cudnn_enabled
+
+        x = x.permute(0, 2, 3, 4, 1).contiguous().view(BT, L , Ca)
+        x = self.fc2(x)
+        x_id[:, :, :] += x #again why [1:]
+        return x_id
 
 
 # This class and its supporting functions below lightly adapted from the ViTDet backbone available at: https://github.com/facebookresearch/detectron2/blob/main/detectron2/modeling/backbone/vit.py # noqa
@@ -33,6 +79,12 @@ class ImageEncoderViT(nn.Module):
         rel_pos_zero_init: bool = True,
         window_size: int = 0,
         global_attn_indexes: Tuple[int, ...] = (),
+        adapter_width: int = 384,
+        adapter_layers: int = 12,
+        adapter_kernel_size: Tuple[int,int,int] = (3,1,1),
+        adapter_pre_attn: bool = False,
+        adapter_pre_mlp: bool = True,
+        
     ) -> None:
         """
         Args:
@@ -82,6 +134,11 @@ class ImageEncoderViT(nn.Module):
                 rel_pos_zero_init=rel_pos_zero_init,
                 window_size=window_size if i not in global_attn_indexes else 0,
                 input_size=(img_size // patch_size, img_size // patch_size),
+                adapter_width=adapter_width,
+                adapter_layers = adapter_layers,
+                adapter_kernel_size=adapter_kernel_size,
+                adapter_pre_attn=adapter_pre_attn and i >= depth - adapter_layers,
+                adapter_pre_mlp=adapter_pre_mlp and i >= depth - adapter_layers,
             )
             self.blocks.append(block)
 
@@ -103,13 +160,31 @@ class ImageEncoderViT(nn.Module):
             LayerNorm2d(out_chans),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.patch_embed(x)
-        if self.pos_embed is not None:
-            x = x + self.pos_embed
+        for n,p in self.named_parameters():
+            if 'adapter' not in n:
+                p.requires_grad_(False)
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x.shape [1,30,3,256,256] -> [B,T,C,H,W]
+        # print(x.shape)
+        B,T = x.size(0),x.size(1) #1,30
+        x = x.flatten(0,1).float()
+
+        x = self.patch_embed(x) #shape = [B,H,W,C]
+        print(f'patch_embed_shape :{x.shape}')
+        # x = x.permute(0,3,2,1)
+        # print(x.shape)
+        spatial_size = tuple(x.size()[2:])
+        # print(spatial_size)
+        if self.pos_embed is not None:
+            print(self.pos_embed.shape)
+            x = x + self.pos_embed
+        print(f'block_pos_embed_{x.shape}') #[30,16,16,768]
+        # x = x.view(B,T,x.size(1),x.size(2)).flatten(0,1) #[1,30,16,16]
         for blk in self.blocks:
-            x = blk(x)
+            print(f'blk_x {x.shape}')
+            x = blk(x,T)
+            print(f'blk_x_after {x.shape}')
 
         x = self.neck(x.permute(0, 3, 1, 2))
 
@@ -123,6 +198,11 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
+        adapter_width: int ,
+        adapter_layers: int ,
+        adapter_kernel_size: Tuple[int,int,int],
+        adapter_pre_attn: bool,
+        adapter_pre_mlp: bool,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = True,
         norm_layer: Type[nn.Module] = nn.LayerNorm,
@@ -151,19 +231,26 @@ class Block(nn.Module):
         self.norm1 = norm_layer(dim)
         self.attn = Attention(
             dim,
+            adapter_width = adapter_width,
+            adapter_kernel_size = adapter_kernel_size ,
+            adapter_pre_attn = adapter_pre_attn, 
+            adapter_pre_mlp = adapter_pre_mlp,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
             use_rel_pos=use_rel_pos,
             rel_pos_zero_init=rel_pos_zero_init,
             input_size=input_size if window_size == 0 else (window_size, window_size),
-        )
-
+            
+        ) 
+        
         self.norm2 = norm_layer(dim)
         self.mlp = MLPBlock(embedding_dim=dim, mlp_dim=int(dim * mlp_ratio), act=act_layer)
 
         self.window_size = window_size
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor,num_frames: int) -> torch.Tensor:
+        print(f'block_  {x.shape}')
+        B,H,W,C = x.shape
         shortcut = x
         x = self.norm1(x)
         # Window partition
@@ -171,14 +258,14 @@ class Block(nn.Module):
             H, W = x.shape[1], x.shape[2]
             x, pad_hw = window_partition(x, self.window_size)
 
-        x = self.attn(x)
+        x = self.attn(x,num_frames)
         # Reverse window partition
         if self.window_size > 0:
             x = window_unpartition(x, self.window_size, pad_hw, (H, W))
-
+        x = x.view(B,H,W,C)
         x = shortcut + x
         x = x + self.mlp(self.norm2(x))
-
+        print(f'block_mlp_  {x.shape}')
         return x
 
 
@@ -188,11 +275,16 @@ class Attention(nn.Module):
     def __init__(
         self,
         dim: int,
+        adapter_width: int ,
+        adapter_kernel_size: Tuple[int,int,int],
+        adapter_pre_attn: bool,
+        adapter_pre_mlp: bool,
         num_heads: int = 8,
         qkv_bias: bool = True,
         use_rel_pos: bool = False,
         rel_pos_zero_init: bool = True,
         input_size: Optional[Tuple[int, int]] = None,
+        
     ) -> None:
         """
         Args:
@@ -221,7 +313,16 @@ class Attention(nn.Module):
             self.rel_pos_h = nn.Parameter(torch.zeros(2 * input_size[0] - 1, head_dim))
             self.rel_pos_w = nn.Parameter(torch.zeros(2 * input_size[1] - 1, head_dim))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        adapter_class = functools.partial(Adapter,
+                                          in_channels=dim,
+                                          adapter_channels=adapter_width,
+                                          kernel_size=adapter_kernel_size,)
+
+        self.adapter_pre_attn = adapter_class() if adapter_pre_attn else None
+        self.adapter_pre_mlp = adapter_class() if adapter_pre_mlp else None
+
+    def attention_(self, x: torch.Tensor) -> torch.Tensor:
+        
         B, H, W, _ = x.shape
         # qkv with shape (3, B, nHead, H * W, C)
         qkv = self.qkv(x).reshape(B, H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
@@ -238,6 +339,21 @@ class Attention(nn.Module):
         x = self.proj(x)
 
         return x
+
+    def forward(self,x: torch.Tensor,num_frames:int) -> torch.Tensor:
+        ''' added adapter support'''
+        print(f'attention  {x.shape}')
+        if self.adapter_pre_attn is not None:
+            x = self.adapter_pre_attn(x,num_frames)
+        x = x + self.attention_(x)  
+        print(f'attention_computed  {x.shape}')
+        if self.adapter_pre_mlp is not None:
+            x = self.adapter_pre_mlp(x,num_frames)
+
+        print(f'adapter_pre_mlp  {x.shape}')
+        return x
+
+
 
 
 def window_partition(x: torch.Tensor, window_size: int) -> Tuple[torch.Tensor, Tuple[int, int]]:
@@ -389,7 +505,10 @@ class PatchEmbed(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        print(f'before_patch_embed_ {x.shape}')
+        x = x.view(-1,3,1024,1024)
         x = self.proj(x)
         # B C H W -> B H W C
+        print(f'patch_embed_ {x.shape}')
         x = x.permute(0, 2, 3, 1)
         return x
