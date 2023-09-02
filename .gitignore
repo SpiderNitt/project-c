@@ -40,3 +40,7 @@ _darcs
 **/node_modules
 yarn.lock
 package-lock.json
+
+# dataset
+dataset/
+raw/
