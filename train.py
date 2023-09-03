@@ -61,6 +61,7 @@ train_dataloader = DataLoader(train,
                               batch_size=cfg.batch_size,
                               shuffle=True,
                               num_workers=cfg.num_workers,
+                              collate_fn=collate_fn
                               )
 val_dataloader = DataLoader(val,
                             batch_size=cfg.batch_size,

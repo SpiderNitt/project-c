@@ -64,28 +64,17 @@ class MoCA(Dataset):
             input_image = self.transform.apply_image(input_image)
             input_image = torch.as_tensor(input_image)
             input_image = input_image.permute(2, 0, 1).contiguous()[None, :, :, :]
-            # input_image = self.preprocess(input_image)
-            # plt.imshow(input_image.squeeze(0).permute(1, 2, 0).numpy().astype(np.uint8))
-            # plt.show()
 
             if next_frame == nth_frame+self.input_seq-1:
                 mask = cv2.imread(self.obj_path[obj]['GT'][next_frame])
                 mask_frame_original_size = mask.shape[:2]
-                # mask = self.transform.apply_image(mask)
                 mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
                 mask = torch.as_tensor(mask)
-                # mask = mask.permute(2, 0, 1).contiguous()[None, :, :, :]
-                # mask = self.pad(mask).squeeze(0).permute(1, 2, 0)
-
 
             img_seq.append(input_image)
 
-        return [{"image": img_seq[0][0, 0, 0], "gt_masks": mask.unsqueeze(0).float(), "original_size": mask_frame_original_size}]
-
+        # image -> (3, H, W), gt_masks -> (1, 1, H, W), original_size -> (H, W)
+        return {"image": img_seq[0][0], "gt_masks": mask.unsqueeze(0).unsqueeze(0).float(), "original_size": mask_frame_original_size}
 
 def collate_fn(batch):
-    images, masks, mask_org = zip(*batch)
-    images = torch.cat(images,0)
-    # masks = torch.cat(masks,0)
-
-    return images, masks, mask_org
+    return batch
