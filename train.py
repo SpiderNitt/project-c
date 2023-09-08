@@ -17,9 +17,9 @@ config = {
     "batch_size": 1,
     "num_workers": 0,
     "num_epochs": 1,
-    "eval_interval": 2,
+    "eval_interval": 20,
     "img_size": 1024,
-    "out_dir": "/content/drive/MyDrive/Group3/sam-finetuning",
+    "out_dir": "/",
     "opt": {
         "learning_rate": 8e-4,
         "weight_decay": 1e-4,
@@ -49,7 +49,7 @@ config = {
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 cfg = OmegaConf.create(config)
-model = sam_model_registry['default'](checkpoint=None)
+model = sam_model_registry['vit_b'](checkpoint=cfg.model.checkpoint)
 model = CamoSam(cfg, model)
 # resume_path = "/content/drive/MyDrive/Group3/sam-finetuning/sam_vit_b_01ec64.pth"
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
@@ -69,17 +69,16 @@ val_dataloader = DataLoader(val,
                             num_workers=cfg.num_workers,
                             collate_fn=collate_fn)
 
-logger = ImageLogger(batch_frequency=cfg.eval_interval)
 wandblogger = WandbLogger()
 checkpoint_callback = ModelCheckpoint(
     dirpath="./checkpoint", every_n_epochs=1, save_top_k=-1
 )
 trainer = L.Trainer(
-    callbacks=[checkpoint_callback, logger],
+    callbacks=[checkpoint_callback],
     precision=32,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
-    strategy="ddp",
+    # strategy="ddp",
     log_every_n_steps=16,
 )
 

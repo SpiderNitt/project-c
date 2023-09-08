@@ -68,7 +68,7 @@ class MoCA(Dataset):
             if next_frame == nth_frame+self.input_seq-1:
                 mask = cv2.imread(self.obj_path[obj]['GT'][next_frame])
                 mask_frame_original_size = mask.shape[:2]
-                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY) / 255
                 mask = torch.as_tensor(mask)
 
             img_seq.append(input_image)

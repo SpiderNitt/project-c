@@ -29,7 +29,14 @@ class CamoSam(L.LightningModule):
 		"""
 		super().__init__()
 		self.model = model
+		for param in self.model.parameters():
+			param.requires_grad = False
+		
+		for param in self.model.mask_decoder.parameters():
+			param.requires_grad = True
+	
 		self.cfg = config
+		self.batch_freq = self.cfg.eval_interval
 
 	def forward(
 		self,
@@ -37,44 +44,47 @@ class CamoSam(L.LightningModule):
 		multimask_output: bool,
 	) -> List[Dict[str, torch.Tensor]]:
 		"""
-        Predicts masks end-to-end from provided images and prompts.
-        If prompts are not known in advance, using SamPredictor is
-        recommended over calling the model directly.
+		Predicts masks end-to-end from provided images and prompts.
+		If prompts are not known in advance, using SamPredictor is
+		recommended over calling the model directly.
 
-        Arguments:
-          batched_input (list(dict)): A list over input images, each a
-            dictionary with the following keys. A prompt key can be
-            excluded if it is not present.
-              'image': The image as a torch tensor in 3xHxW format,
-                already transformed for input to the model.
-              'original_size': (tuple(int, int)) The original size of
-                the image before transformation, as (H, W).
-              'point_coords': (torch.Tensor) Batched point prompts for
-                this image, with shape BxNx2. Already transformed to the
-                input frame of the model.
-              'point_labels': (torch.Tensor) Batched labels for point prompts,
-                with shape BxN.
-              'boxes': (torch.Tensor) Batched box inputs, with shape Bx4.
-                Already transformed to the input frame of the model.
-              'mask_inputs': (torch.Tensor) Batched mask inputs to the model,
-                in the form Bx1xHxW.
-          multimask_output (bool): Whether the model should predict multiple
-            disambiguating masks, or return a single mask.
+		Arguments:
+		  batched_input (list(dict)): A list over input images, each a
+			dictionary with the following keys. A prompt key can be
+			excluded if it is not present.
+			  'image': The image as a torch tensor in 3xHxW format,
+				already transformed for input to the model.
+			  'original_size': (tuple(int, int)) The original size of
+				the image before transformation, as (H, W).
+			  'point_coords': (torch.Tensor) Batched point prompts for
+				this image, with shape BxNx2. Already transformed to the
+				input frame of the model.
+			  'point_labels': (torch.Tensor) Batched labels for point prompts,
+				with shape BxN.
+			  'boxes': (torch.Tensor) Batched box inputs, with shape Bx4.
+				Already transformed to the input frame of the model.
+			  'mask_inputs': (torch.Tensor) Batched mask inputs to the model,
+				in the form Bx1xHxW.
+		  multimask_output (bool): Whether the model should predict multiple
+			disambiguating masks, or return a single mask.
 
-        Returns:
-          (list(dict)): A list over input images, where each element is
-            as dictionary with the following keys.
-              'masks': (torch.Tensor) Batched binary mask predictions,
-                with shape BxCxHxW, where B is the number of input prompts,
-                C is determined by multimask_output, and (H, W) is the
-                original size of the image.
-              'iou_predictions': (torch.Tensor) The model's predictions
-                of mask quality, in shape BxC.
-              'low_res_logits': (torch.Tensor) Low resolution logits with
-                shape BxCxHxW, where H=W=256. Can be passed as mask input
-                to subsequent iterations of prediction.
-        """
+		Returns:
+		  (list(dict)): A list over input images, where each element is
+			as dictionary with the following keys.
+			  'masks': (torch.Tensor) Batched binary mask predictions,
+				with shape BxCxHxW, where B is the number of input prompts,
+				C is determined by multimask_output, and (H, W) is the
+				original size of the image.
+			  'iou_predictions': (torch.Tensor) The model's predictions
+				of mask quality, in shape BxC.
+			  'low_res_logits': (torch.Tensor) Low resolution logits with
+				shape BxCxHxW, where H=W=256. Can be passed as mask input
+				to subsequent iterations of prediction.
+		"""
 		return self.model(batched_input, multimask_output)
+	
+	def check_frequency(self, check_idx):
+		return check_idx % self.batch_freq == 0
 	
 	@torch.no_grad()
 	def log_images(self, batch, output, train=True):
@@ -97,18 +107,18 @@ class CamoSam(L.LightningModule):
 		table = wandb.Table(columns=['ID', 'Image'])
 
 		for id, (img, gt, pred) in enumerate(zip(img_list, gt_list, mask_list)):
-			mask_img = wandb.Image(img, masks = {
+			mask_img = wandb.Image(img.cpu().numpy(), masks = {
 				"prediction" : {
-					"mask_data" : pred,
+					"mask_data" : pred.cpu().numpy(),
 				},
-				"ground truth" : {"mask_data" : gt}
+				"ground truth" : {"mask_data" : gt.cpu().numpy()}
 			})
 			
 			table.add_data(id, mask_img)
 		if train:
-			self.log({"Train" : table})
+			wandb.log({"Train" : table})
 		else:
-			self.log({"Validation" : table})
+			wandb.log({"Validation" : table})
 
 	def sigmoid_focal_loss(
 		self,
@@ -214,7 +224,7 @@ class CamoSam(L.LightningModule):
 			# compute batch_iou of pred_mask and gt_mask
 			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1])
 			gt_mask = image_record['gt_masks'].reshape(-1, image_record['gt_masks'].shape[-2], image_record['gt_masks'].shape[-1])
-			num_masks = pred_masks.shape(0)
+			num_masks = pred_masks.size(0)
 			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
 			union = torch.sum(pred_masks, dim=(-1, -2))
@@ -224,17 +234,19 @@ class CamoSam(L.LightningModule):
 			loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, reduction="mean")
 			loss_dice += self.dice_loss(pred_masks, gt_mask)
 			loss_iou += F.mse_loss(
-				each_output["iou_predictions"], batch_iou, reduction="mean"
+				each_output["iou_predictions"].reshape(-1), batch_iou, reduction="mean"
 			)
 
 		loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
 		avg_focal = loss_focal.item() / bs
 		avg_dice = loss_dice.item() / bs
 		avg_iou = loss_iou.item() / bs
-		avg_total = loss_total.item() / bs
-		self.log_dict({"train_total_loss" : avg_total, "train_focal_loss" : avg_focal, "train_dice_loss" : avg_dice, "train_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True)
 
-		return avg_total
+		if self.check_frequency(batch_idx):
+			self.log_images(batch, output)
+		self.log_dict({"train_total_loss" : loss_total, "train_focal_loss" : avg_focal, "train_dice_loss" : avg_dice, "train_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True)
+
+		return loss_total
 	
 	def validation_step(self, batch, batch_idx):
 		bs = len(batch)
@@ -248,7 +260,7 @@ class CamoSam(L.LightningModule):
 			# compute batch_iou of pred_mask and gt_mask
 			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1])
 			gt_mask = image_record['gt_masks'].reshape(-1, image_record['gt_masks'].shape[-2], image_record['gt_masks'].shape[-1])
-			num_masks = pred_masks.shape(0)
+			num_masks = pred_masks.size(0)
 
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
 			union = torch.sum(pred_masks, dim=(-1, -2))
@@ -258,14 +270,14 @@ class CamoSam(L.LightningModule):
 			loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, reduction="mean")
 			loss_dice += self.dice_loss(pred_masks, gt_mask)
 			loss_iou += F.mse_loss(
-				each_output["iou_predictions"], batch_iou, reduction="mean"
+				each_output["iou_predictions"].reshape(-1), batch_iou, reduction="mean"
 			)
 
 		loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
 		avg_focal = loss_focal.item() / bs
 		avg_dice = loss_dice.item() / bs
 		avg_iou = loss_iou.item() / bs
-		avg_total = loss_total.item() / bs
-		self.log_dict({"val_total_loss" : avg_total, "val_focal_loss" : avg_focal, "val_dice_loss" : avg_dice, "val_iou_loss" : avg_iou})
 
-		return avg_total
+		self.log_dict({"val_total_loss" : loss_total, "val_focal_loss" : avg_focal, "val_dice_loss" : avg_dice, "val_iou_loss" : avg_iou})
+
+		return loss_total
