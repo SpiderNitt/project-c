@@ -96,13 +96,13 @@ class CamoSam(L.LightningModule):
 			batch_i = batch[i]
 			output_i = output[i]
 			img_list.append(batch_i['image'].permute(1, 2, 0))
-			gt_list.append(batch_i['gt_masks'].squeeze())
+			gt_list.append(batch_i['gt_mask'].squeeze())
 			mask_list.append(output_i['masks'][0].squeeze())
 		
 		# num_maks = gt_list[0].shape[0]
 		# gt_grid = make_grid(torch.cat(gt_list, dim=0), n_row=len(gt_list))
 		# mask_grid = make_grid(torch.cat(mask_list, dim=0), nrow=len(mask_list))
-		# self.log_dict({"images" : wandb.Image(make_grid(img_list)), "gt_masks" : wandb.Image(gt_grid), "masks" : wandb.Image(mask_grid)})
+		# self.log_dict({"images" : wandb.Image(make_grid(img_list)), "gt_mask" : wandb.Image(gt_grid), "masks" : wandb.Image(mask_grid)})
 
 		table = wandb.Table(columns=['ID', 'Image'])
 
@@ -223,7 +223,7 @@ class CamoSam(L.LightningModule):
 		for each_output, image_record in zip(output, batch):
 			# compute batch_iou of pred_mask and gt_mask
 			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1])
-			gt_mask = image_record['gt_masks'].reshape(-1, image_record['gt_masks'].shape[-2], image_record['gt_masks'].shape[-1])
+			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1])
 			num_masks = pred_masks.size(0)
 			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
@@ -259,7 +259,7 @@ class CamoSam(L.LightningModule):
 		for each_output, image_record in zip(output, batch):
 			# compute batch_iou of pred_mask and gt_mask
 			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1])
-			gt_mask = image_record['gt_masks'].reshape(-1, image_record['gt_masks'].shape[-2], image_record['gt_masks'].shape[-1])
+			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1])
 			num_masks = pred_masks.size(0)
 
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))

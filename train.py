@@ -7,12 +7,12 @@ from omegaconf import OmegaConf
 
 from segment_anything import sam_model_registry
 from segment_anything.modeling import ImageLogger, CamoSam
-from dataset import MoCA, collate_fn
+from dataloaders import VideoDataset, get_loader
 
 import os
 
 config = {
-    "seq_len": 1,
+    "seq_len": 4,
     "num_devices": 4,
     "batch_size": 1,
     "num_workers": 0,
@@ -38,10 +38,10 @@ config = {
     },
     "dataset": {
         "train": {
-            "root_dir": "raw/MoCA-Mask/MoCA_Video/TrainDataset_per_sq",
+            "root_dir": "MoCA-Mask/MoCA_Video",
         },
         "val": {
-            "root_dir": "raw/MoCA-Mask/MoCA_Video/TestDataset_per_sq",
+            "root_dir": "MoCA-Mask/MoCA_Video",
         },
     },
 }
@@ -49,25 +49,12 @@ config = {
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 cfg = OmegaConf.create(config)
-model = sam_model_registry['vit_b'](checkpoint=cfg.model.checkpoint)
+model = sam_model_registry['vit_b'](checkpoint=None)
 model = CamoSam(cfg, model)
 # resume_path = "/content/drive/MyDrive/Group3/sam-finetuning/sam_vit_b_01ec64.pth"
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
 
-train = MoCA(cfg, train=True)
-val = MoCA(cfg, train=False)
-
-train_dataloader = DataLoader(train,
-                              batch_size=cfg.batch_size,
-                              shuffle=True,
-                              num_workers=cfg.num_workers,
-                              collate_fn=collate_fn
-                              )
-val_dataloader = DataLoader(val,
-                            batch_size=cfg.batch_size,
-                            shuffle=True,
-                            num_workers=cfg.num_workers,
-                            collate_fn=collate_fn)
+train_dataloader = get_loader(cfg.dataset.train.root_dir, cfg.batch_size, cfg.seq_len)
 
 wandblogger = WandbLogger()
 checkpoint_callback = ModelCheckpoint(
@@ -82,4 +69,4 @@ trainer = L.Trainer(
     log_every_n_steps=16,
 )
 
-trainer.fit(model, train_dataloader, val_dataloader)
+trainer.fit(model, train_dataloader)

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Tuple
 from .image_encoder import ImageEncoderViT
 from .mask_decoder import MaskDecoder
 from .prompt_encoder import PromptEncoder
+from .propagation_module import PropagationModule
 
 
 class Sam(nn.Module):
@@ -41,6 +42,7 @@ class Sam(nn.Module):
         """
         super().__init__()
         self.image_encoder = image_encoder
+        self.propagation_module = PropagationModule(4)
         self.prompt_encoder = prompt_encoder
         self.mask_decoder = mask_decoder
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
@@ -102,10 +104,13 @@ class Sam(nn.Module):
                 points = (image_record["point_coords"], image_record["point_labels"])
             else:
                 points = None
+                      
+            prev_masks = self.propagation_module(image_record["prev_masks"]) # Output -> (1, 1, 256, 256)
+            
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 points=points,
                 boxes=image_record.get("boxes", None),
-                masks=image_record.get("mask_inputs", None),
+                masks=prev_masks
             )
             low_res_masks, iou_predictions = self.mask_decoder(
                 image_embeddings=curr_embedding.unsqueeze(0),
@@ -157,7 +162,9 @@ class Sam(nn.Module):
             align_corners=False,
         )
         masks = masks[..., : input_size[0], : input_size[1]]
-        masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
+        masks = F.interpolate(
+            masks, original_size, mode="bilinear", align_corners=False
+        )
         return masks
 
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
