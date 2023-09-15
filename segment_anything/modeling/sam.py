@@ -27,6 +27,7 @@ class Sam(nn.Module):
         mask_decoder: MaskDecoder,
         pixel_mean: List[float] = [123.675, 116.28, 103.53],
         pixel_std: List[float] = [58.395, 57.12, 57.375],
+        cfg = None
     ) -> None:
         """
         SAM predicts object masks from an image and input prompts.
@@ -41,8 +42,9 @@ class Sam(nn.Module):
           pixel_std (list(float)): Std values for normalizing pixels in the input image.
         """
         super().__init__()
+        self.cfg = cfg
         self.image_encoder = image_encoder
-        self.propagation_module = PropagationModule(4)
+        self.propagation_module = PropagationModule(cfg.seq_len)
         self.prompt_encoder = prompt_encoder
         self.mask_decoder = mask_decoder
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)

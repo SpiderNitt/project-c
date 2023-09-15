@@ -32,7 +32,7 @@ class CamoSam(L.LightningModule):
 		for param in self.model.parameters():
 			param.requires_grad = False
 		
-		for param in self.model.mask_decoder.parameters():
+		for param in self.model.propagation_module.parameters():
 			param.requires_grad = True
 	
 		self.cfg = config
@@ -281,3 +281,4 @@ class CamoSam(L.LightningModule):
 		self.log_dict({"val_total_loss" : loss_total, "val_focal_loss" : avg_focal, "val_dice_loss" : avg_dice, "val_iou_loss" : avg_iou})
 
 		return loss_total
+	

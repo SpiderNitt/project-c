@@ -152,13 +152,14 @@ class VideoDataset(data.Dataset):
         prev_masks = resize(prev_masks, size=(256, 256))
         prev_masks = F.pad(prev_masks, (0, 0, 0, 0, self.seq_len - len(prev_masks), 0))
 
-        # NOTE: imgs will have current_frame and prev_frame. In case, we plan to use only the prev_frames as an input for the propagation module, change imgs -> imgs[-1] in which case image -> (3, H, W)
+        # NOTE: imgs will have current_frame and prev_frame. In case, we plan to use only the prev_frames as an input for the propagation module, change imgs -> imgs[-1] in which case image -> (3, H', W')
+        # H' and W' -> H and W after ResizeLongestSide
         return {
             "image": imgs[-1],
             "gt_mask": gt_mask,
             "prev_masks": prev_masks.unsqueeze(0),
-            "original_size": tuple(imgs[0][0].shape)
-        }  # image -> list((3, H, W)), gt_mask -> Tensor(H, W), prev_masks -> Tensor(1, seq_len, 256, 256), original_size: (H, W)
+            "original_size": gt_mask.shape
+        }  # image -> list((3, H', W')), gt_mask -> Tensor(H, W), prev_masks -> Tensor(1, seq_len, 256, 256), original_size: (H, W)
 
     def rgb_loader(self, path):
         with open(path, "rb") as f:
@@ -172,7 +173,6 @@ class VideoDataset(data.Dataset):
 
     def __len__(self):
         return len(self.image_list)
-
 
 def collate_fn(batch):
     return batch

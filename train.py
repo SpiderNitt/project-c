@@ -1,4 +1,5 @@
 import lightning as L
+import torch
 from torch.utils.data import DataLoader
 
 from lightning.pytorch.loggers import WandbLogger
@@ -13,7 +14,7 @@ import os
 
 config = {
     "seq_len": 4,
-    "num_devices": 4,
+    "num_devices": 1,
     "batch_size": 1,
     "num_workers": 0,
     "num_epochs": 1,
@@ -49,7 +50,8 @@ config = {
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 cfg = OmegaConf.create(config)
-model = sam_model_registry['vit_b'](checkpoint=None)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = sam_model_registry['vit_b'](checkpoint=None, cfg=cfg)
 model = CamoSam(cfg, model)
 # resume_path = "/content/drive/MyDrive/Group3/sam-finetuning/sam_vit_b_01ec64.pth"
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
@@ -61,6 +63,7 @@ checkpoint_callback = ModelCheckpoint(
     dirpath="./checkpoint", every_n_epochs=1, save_top_k=-1
 )
 trainer = L.Trainer(
+    accelerator=device,
     callbacks=[checkpoint_callback],
     precision=32,
     logger=wandblogger,
