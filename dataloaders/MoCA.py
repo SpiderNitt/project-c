@@ -156,8 +156,8 @@ class VideoDataset(data.Dataset):
         # H' and W' -> H and W after ResizeLongestSide
         return {
             "image": imgs[-1],
-            "gt_mask": gt_mask,
-            "prev_masks": prev_masks.unsqueeze(0),
+            "gt_mask": gt_mask/255.0,
+            "prev_masks": prev_masks.unsqueeze(0)/255.0,
             "original_size": gt_mask.shape
         }  # image -> list((3, H', W')), gt_mask -> Tensor(H, W), prev_masks -> Tensor(1, seq_len, 256, 256), original_size: (H, W)
 
