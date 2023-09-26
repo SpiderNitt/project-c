@@ -12,13 +12,23 @@ from dataloaders import VideoDataset, get_loader
 
 import os
 
+# supported measures: 'MAE'       => Mean Squared Error
+#                     'E-measure' =>  Enhanced-alignment measure
+#                     'S-measure' =>  Structure-measure
+#                     'Max-F'     =>  Maximum F-measure
+#                     'Adp-F'     =>  Adaptive F-measure
+#                     'Wgt-F'     =>  Weighted F-measure
+
 config = {
+    "precision": 32,
     "seq_len": 4,
     "num_devices": 1,
-    "batch_size": 1,
+    "batch_size": 2,
     "num_workers": 0,
-    "num_epochs": 1,
-    "eval_interval": 20,
+    "num_epochs": 10,
+    "metric_train_eval_interval": 20,
+    "log_every_n_steps": 1,
+    "log_metrics": ['MAE', 'E-measure', 'S-measure', 'Max-F', 'Adp-F', 'Wgt-F'],
     "img_size": 1024,
     "out_dir": "/",
     "opt": {
@@ -39,10 +49,10 @@ config = {
     },
     "dataset": {
         "train": {
-            "root_dir": "MoCA-Mask/MoCA_Video",
+            "root_dir": "raw/MoCA-Mask/MoCA_Video",
         },
         "val": {
-            "root_dir": "MoCA-Mask/MoCA_Video",
+            "root_dir": "raw/MoCA-Mask/MoCA_Video",
         },
     },
 }
@@ -56,20 +66,21 @@ model = CamoSam(cfg, model)
 # resume_path = "/content/drive/MyDrive/Group3/sam-finetuning/sam_vit_b_01ec64.pth"
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
 
-train_dataloader = get_loader(cfg.dataset.train.root_dir, cfg.batch_size, cfg.seq_len)
+train_dataloader, validation_dataloader = get_loader(cfg.dataset.train.root_dir, cfg.batch_size, cfg.seq_len)
 
-wandblogger = WandbLogger()
+wandblogger = WandbLogger(project="Propagation")
+wandblogger.experiment.config.update(config)
 checkpoint_callback = ModelCheckpoint(
     dirpath="./checkpoint", every_n_epochs=1, save_top_k=-1
 )
 trainer = L.Trainer(
     accelerator=device,
     callbacks=[checkpoint_callback],
-    precision=32,
+    precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
     # strategy="ddp",
-    log_every_n_steps=16,
+    log_every_n_steps=cfg.log_every_n_steps,
 )
 
-trainer.fit(model, train_dataloader)
+trainer.fit(model, train_dataloader, validation_dataloader)

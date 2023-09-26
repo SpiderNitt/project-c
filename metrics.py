@@ -1,6 +1,7 @@
 import os
 import cv2
 import sys
+import torch
 import numpy as np
 from glob import glob
 from tqdm import tqdm
@@ -13,6 +14,90 @@ eps = sys.float_info.epsilon
 CREDITS - 
 
 '''
+
+@torch.no_grad()
+def batch_measure(batch_gt, batch_sm, measures, beta=np.sqrt(0.3), gt_threshold=0.5):
+    """
+    function that calculates Saliency measures for given directories
+
+    arameters
+    ----------
+    gt_dir : str
+        The path to the ground truth directory
+    sm_dir : str
+        The path to the predicted saliency map directory
+    measures : list
+        list of measure names which need to be calculated
+        supported measures: 'MAE'       => Mean Squared Error
+                            'E-measure' =>  Enhanced-alignment measure
+                            'S-measure' =>  Structure-measure
+                            'Max-F'     =>  Maximum F-measure
+                            'Adp-F'     =>  Adaptive F-measure
+                            'Wgt-F'     =>  Weighted F-measure
+    save : str
+        If spesified, the results will be saved in 'save' directory
+    beta : float
+        beta parameter that is used in F-measure formula. default is sqrt(0.3)
+    gt_threshold : float
+        The threshold that is used to binrize ground truth maps.
+
+    Returns
+    -------
+    values : dictionary
+        a dict containing the results
+    """
+
+    values = dict()
+    for idx in measures:
+        values[idx] = list()
+        if idx == 'Max-F':
+            values['Precision'] = list()
+            values['Recall']    = list()
+
+    for gt,sm in zip(batch_gt,batch_sm):
+            gt, sm = normalize(gt, sm, gt_threshold)
+
+            if 'MAE' in measures:
+                values['MAE'].append(mean_square_error(gt, sm))
+            if 'E-measure' in measures:
+                values['E-measure'].append(e_measure(gt, sm))
+            if 'S-measure' in measures:
+                values['S-measure'].append(s_measure(gt, sm))
+            if 'Adp-F' in measures:
+                values['Adp-F'].append(adaptive_fmeasure(gt, sm, beta))
+            if 'Wgt-F' in measures:
+                values['Wgt-F'].append(weighted_fmeasure(gt, sm))
+            if 'Max-F' in measures:
+                prec, recall = prec_recall(gt, sm, 256)  # 256 thresholds between 0 and 1
+                values['Precision'].append(prec)
+                values['Recall'].append(recall)
+
+    if 'MAE' in measures:
+        values['MAE'] = np.mean(values['MAE'])
+
+    if 'E-measure' in measures:
+        values['E-measure'] = np.mean(values['E-measure'])
+
+    if 'S-measure' in measures:
+        values['S-measure'] = np.mean(values['S-measure'])
+
+    if 'Adp-F' in measures:
+        values['Adp-F'] = np.mean(values['Adp-F'])
+
+    if 'Wgt-F' in measures:
+        values['Wgt-F'] = np.mean(values['Wgt-F'])
+
+    if 'Max-F' in measures:
+        values['Precision'] = np.mean(np.hstack(values['Precision'][:]), 1)
+        values['Recall'] = np.mean(np.hstack(values['Recall'][:]), 1)
+        f_measures = (1 + beta ** 2) * values['Precision'] * values['Recall'] / (
+                beta ** 2 * values['Precision'] + values['Recall'])
+        values['Fmeasure_all_thresholds'] = f_measures
+        values['Max-F'] = np.max(f_measures)
+
+    return values
+
+
 
 def calculate_measures(gt_dir, sm_dir, measures, save=False, beta=np.sqrt(0.3), gt_threshold=0.5):
     """
@@ -142,6 +227,34 @@ def read_and_normalize(gt_path, sm_path, gt_threshold=0.5):
     return gt_img, sm_img
 
 
+def normalize(gt_img, sm_img, gt_threshold=0.5):
+    """
+    function that reads, normalizes and crops a ground truth and a saliency map
+
+    parameters
+    ----------
+    gt_path : str
+        The path to a ground truth map
+    sm_path : str
+        The path to a predicted saliency map
+    gt_threshold : float
+        The threshold that is used to binrize ground truth maps.
+
+    Returns
+    -------
+    gt_img, sm_img : numpy.ndarray
+        The prepared arrays
+    """
+    gt_img = norm_img(gt_img)
+    gt_img = (gt_img >= gt_threshold).astype(np.float32)
+    sm_img = norm_img(sm_img)
+    if sm_img.shape[0] != gt_img.shape[0] or sm_img.shape[1] != gt_img.shape[1]:
+        sm_img = cv2.resize(sm_img, (gt_img.shape[1], gt_img.shape[0]))
+
+    return gt_img, sm_img
+
+
+
 def norm_img(im):
     return cv2.normalize(im.astype('float'),
                          None,
@@ -177,8 +290,8 @@ def e_measure(gt, sm):
     """
     sm = adptive_binary(sm)
 
-    gt = gt.astype(np.bool)
-    sm = sm.astype(np.bool)
+    gt = gt.astype(np.bool_) # np.bool is depreciated
+    sm = sm.astype(np.bool_)
 
     dgt = gt.astype(np.float32)
     dsm = sm.astype(np.float32)

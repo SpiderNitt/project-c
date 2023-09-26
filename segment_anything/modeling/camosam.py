@@ -3,8 +3,8 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-
-from metrics import calculate_measures
+import numpy as np
+from metrics import batch_measure
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torch
 from torch import nn
@@ -15,6 +15,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import lightning as L
 from torchvision.utils import make_grid
 import wandb
+import gc
+import matplotlib.pyplot as plt
+import copy
 
 class CamoSam(L.LightningModule):
 	mask_threshold: float = 0.0
@@ -37,7 +40,7 @@ class CamoSam(L.LightningModule):
 			param.requires_grad = True
 	
 		self.cfg = config
-		self.batch_freq = self.cfg.eval_interval
+		self.batch_freq = self.cfg.metric_train_eval_interval
 
 	def forward(
 		self,
@@ -86,20 +89,22 @@ class CamoSam(L.LightningModule):
 	
 	def check_frequency(self, check_idx):
 		return check_idx % self.batch_freq == 0
+
+	@torch.no_grad()
+	def log_pr_metrics(self,metric, batch_idx, train=True):
+		for metric_ in ["Fmeasure_all_thresholds", "Precision", "Recall"]:
+			data = metric[metric_]
+			data = [[i,j] for i,j in zip(np.linspace(0,1,data.shape[0]), data)]
+			table = wandb.Table(data=data, columns = ["Threshold", metric_])
+			if train:
+				wandb.log({f"PR_curve/Epoch:{self.current_epoch}_{batch_idx}_Train: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
+			else:
+				wandb.log({f"PR_curve/Epoch:{self.current_epoch}_{batch_idx}_Validation: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
+
 	
 	@torch.no_grad()
-	def log_images(self, batch, output, train=True):
-		bs = len(batch)
-		img_list = []
-		gt_list = []
-		mask_list = []
-		for i in range(bs):
-			batch_i = batch[i]
-			output_i = output[i]
-			img_list.append(batch_i['image'].permute(1, 2, 0))
-			gt_list.append(batch_i['gt_mask'].squeeze())
-			mask_list.append(output_i['masks'][0].squeeze())
-		
+	def log_images(self,img_list, mask_list, gt_list, batch_idx, train=True):
+
 		# num_maks = gt_list[0].shape[0]
 		# gt_grid = make_grid(torch.cat(gt_list, dim=0), n_row=len(gt_list))
 		# mask_grid = make_grid(torch.cat(mask_list, dim=0), nrow=len(mask_list))
@@ -108,24 +113,26 @@ class CamoSam(L.LightningModule):
 		table = wandb.Table(columns=['ID', 'Image'])
 
 		for id, (img, gt, pred) in enumerate(zip(img_list, gt_list, mask_list)):
-			mask_img = wandb.Image(img.cpu().numpy(), masks = {
-				"prediction" : {
-					"mask_data" : pred.cpu().numpy(),
-				},
-				"ground truth" : {"mask_data" : gt.cpu().numpy()}
+			print(img.shape, gt.shape, pred.shape)
+			plt.imshow(gt)
+			plt.show()
+			plt.imshow(pred)
+			plt.show()
+			mask_img = wandb.Image(img, masks = {
+				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}
 			})
 			
 			table.add_data(id, mask_img)
 		if train:
-			wandb.log({"Train" : table})
+			wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Train" : table})
 		else:
-			wandb.log({"Validation" : table})
+			wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Validation" : table})
 
 	def sigmoid_focal_loss(
 		self,
 		inputs: torch.Tensor,
 		targets: torch.Tensor,
-		alpha: float = 0.25,
+		alpha: float = 0.25, # optimal based on https://arxiv.org/pdf/1708.02002.pdf
 		gamma: float = 2,
 		reduction: str = "none",
 	) -> torch.Tensor:
@@ -154,8 +161,7 @@ class CamoSam(L.LightningModule):
 		p = torch.sigmoid(inputs)
 		ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
 		p_t = p * targets + (1 - p) * (1 - targets)
-		loss = ce_loss * ((1 - p_t) ** gamma)
-
+		loss = ce_loss * ((1 - p_t) ** gamma) # [1, H, W]
 		if alpha >= 0:
 			alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
 			loss = alpha_t * loss
@@ -183,11 +189,13 @@ class CamoSam(L.LightningModule):
 					classification label for each element in inputs
 					(0 for the negative class and 1 for the positive class).
 		"""
+		# 2ypˆ+ 1 /(y + ˆp + 1)
+  
 		inputs = inputs.sigmoid()
-		inputs = inputs.flatten(1)
-		targets = targets.flatten(1)
+		inputs = inputs.flatten(1)	 # [1, HxW]
+		targets = targets.flatten(1) # [1, HxW]
 		numerator = 2 * (inputs * targets).sum(1)
-		denominator = inputs.sum(-1) + targets.sum(-1)
+		denominator = inputs.sum(-1) + targets.sum(-1) 
 		loss = 1 - (numerator + 1) / (denominator + 1)
 		return loss.mean()
 
@@ -210,22 +218,32 @@ class CamoSam(L.LightningModule):
 			weight_decay=self.cfg.opt.weight_decay,
 			amsgrad=False,
 		)
-		scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, self.lr_lambda)
-		return [optimizer], [scheduler]
+		# scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, self.lr_lambda)
+		return [optimizer] #, [scheduler]
 
 	def training_step(self, batch, batch_idx):
 		bs = len(batch)
 		output = self(batch, False)
-
 		loss_focal = 0
 		loss_dice = 0
 		loss_iou = 0
 
+		img_list = []
+		mask_list = []
+		gt_mask_list = []
+
 		for each_output, image_record in zip(output, batch):
 			# compute batch_iou of pred_mask and gt_mask
-			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1])
-			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1])
-			num_masks = pred_masks.size(0)
+			# H,W varies based on video
+			# each_output - [1, 1, 720, 1280] (no.of prompts x multimask = 1 x H x W) image_record - [720, 1280] each_output["iou_predictions"] - [1,1]
+			
+   
+			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1]) #[1, 720, 1280]
+			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
+   
+			mask_list.append(pred_masks.cpu().detach().numpy()[0])
+			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
+			gt_mask_list.append(gt_mask.cpu().numpy()[0])
 			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
 			union = torch.sum(pred_masks, dim=(-1, -2))
@@ -238,31 +256,52 @@ class CamoSam(L.LightningModule):
 				each_output["iou_predictions"].reshape(-1), batch_iou, reduction="mean"
 			)
 
+		# Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
 		loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
 		avg_focal = loss_focal.item() / bs
 		avg_dice = loss_dice.item() / bs
 		avg_iou = loss_iou.item() / bs
 
+		metrics = {}
 		if self.check_frequency(batch_idx):
-			self.log_images(batch, output)
-		self.log_dict({"train_total_loss" : loss_total, "train_focal_loss" : avg_focal, "train_dice_loss" : avg_dice, "train_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True)
+			metrics = batch_measure(gt_mask_list, mask_list, measures=self.cfg.log_metrics)
+			self.log_pr_metrics(metrics, batch_idx=batch_idx,train=True)
+			self.log_images(img_list, mask_list, gt_mask_list, batch_idx=batch_idx, train=True)
+			metrics = {'Metric/train_'+i:metrics[i] for i in metrics}
+			del metrics["Metric/train_Fmeasure_all_thresholds"], metrics["Metric/train_Precision"], metrics["Metric/train_Recall"]
+		
+		del img_list, mask_list, gt_mask_list
+		gc.collect()
+
+		self.log_dict({"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou} | metrics, on_step=True, on_epoch=True, prog_bar=True)
 
 		return loss_total
 	
 	def validation_step(self, batch, batch_idx):
 		bs = len(batch)
 		output = self(batch, False)
-
 		loss_focal = 0
 		loss_dice = 0
 		loss_iou = 0
 
+		img_list = []
+		mask_list = []
+		gt_mask_list = []
+
 		for each_output, image_record in zip(output, batch):
 			# compute batch_iou of pred_mask and gt_mask
-			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1])
-			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1])
-			num_masks = pred_masks.size(0)
-
+			# H,W varies based on video
+			# each_output - [1, 1, 720, 1280] (no.of prompts x multimask = 1 x H x W) image_record - [720, 1280] each_output["iou_predictions"] - [1,1]
+			
+   
+			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1]) #[1, 720, 1280]
+			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
+   
+			mask_list.append(pred_masks.cpu().detach().numpy()[0])
+			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
+			gt_mask_list.append(gt_mask.cpu().numpy()[0])
+			
+			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
 			union = torch.sum(pred_masks, dim=(-1, -2))
 			epsilon = 1e-7
@@ -274,12 +313,23 @@ class CamoSam(L.LightningModule):
 				each_output["iou_predictions"].reshape(-1), batch_iou, reduction="mean"
 			)
 
+		# Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
 		loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
 		avg_focal = loss_focal.item() / bs
 		avg_dice = loss_dice.item() / bs
 		avg_iou = loss_iou.item() / bs
 
-		self.log_dict({"val_total_loss" : loss_total, "val_focal_loss" : avg_focal, "val_dice_loss" : avg_dice, "val_iou_loss" : avg_iou})
+		metrics = {}
+		if self.check_frequency(batch_idx):
+			metrics = batch_measure(gt_mask_list, mask_list, measures=self.cfg.log_metrics)
+			self.log_pr_metrics(metrics, batch_idx=batch_idx,train=False)
+			self.log_images(img_list, mask_list, gt_mask_list, batch_idx=batch_idx, train=False)
+			metrics = {'Metric/validation_'+i:metrics[i] for i in metrics}
+			del metrics["Metric/validation_Fmeasure_all_thresholds"], metrics["Metric/validation_Precision"], metrics["Metric/validation_Recall"]
+		
+		del img_list, mask_list, gt_mask_list
+		gc.collect()
+
+		self.log_dict({"Loss/validation_total_loss" : loss_total, "Loss/validation_focal_loss" : avg_focal, "Loss/validation_dice_loss" : avg_dice, "Loss/validation_iou_loss" : avg_iou} | metrics, on_step=True, on_epoch=True, prog_bar=True)
 
 		return loss_total
-	

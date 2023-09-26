@@ -2,6 +2,7 @@ raw
 lightning_logs
 wandb
 MoCA-Mask
+checkpoint
 
 .nfs*
 

@@ -107,7 +107,7 @@ class Sam(nn.Module):
             else:
                 points = None
                       
-            prev_masks = self.propagation_module(image_record["prev_masks"]) # Output -> (1, 1, 256, 256)
+            prev_masks = self.propagation_module(image_record["prev_masks"]) # Output -> (1, 1, 256, 256) - no.of promptsx1xHxW.
             
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 points=points,
@@ -126,7 +126,7 @@ class Sam(nn.Module):
                 input_size=image_record["image"].shape[-2:],
                 original_size=image_record["original_size"],
             )
-            masks = (masks > self.mask_threshold).float()
+            masks = (masks > self.mask_threshold).float() # 0 or 1
             outputs.append(
                 {
                     "masks": masks,

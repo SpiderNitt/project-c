@@ -107,6 +107,8 @@ class VideoDataset(data.Dataset):
                 images = sorted(glob(osp.join(data_root, scene, "Frame", img_format)))
             elif split == "TrainDataset_per_sq":
                 images = sorted(glob(osp.join(data_root, scene, "Imgs", img_format)))
+            elif split == "TestDataset_per_sq":
+                images = sorted(glob(osp.join(data_root, scene, "Imgs", img_format)))
             gt_list = sorted(glob(osp.join(data_root, scene, "GT", "*.png")))
             # pdb.set_trace()
 
@@ -172,7 +174,8 @@ class VideoDataset(data.Dataset):
             return img.convert("L")
 
     def __len__(self):
-        return len(self.image_list)
+        # return len(self.image_list)
+        return 10
 
 def collate_fn(batch):
     return batch
@@ -185,18 +188,31 @@ def get_loader(
     seq_len=4,
     trainsize=1024,
     train_split="TrainDataset_per_sq",
+    validation_split="TestDataset_per_sq",
     shuffle=True,
     num_workers=0,
     pin_memory=True,
     collate_fn=collate_fn,
 ):
-    dataset = VideoDataset(dataset, seq_len, trainsize, split=train_split)
-    data_loader = data.DataLoader(
-        dataset=dataset,
+    train_dataset = VideoDataset(dataset, seq_len, trainsize, split=train_split)
+    train_data_loader = data.DataLoader(
+        dataset=train_dataset,
         batch_size=batchsize,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collate_fn,
     )
-    return data_loader
+    
+    val_dataset = VideoDataset(dataset, seq_len, trainsize, split=validation_split)
+    val_data_loader = data.DataLoader(
+        dataset=val_dataset,
+        batch_size=batchsize,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=collate_fn,
+    )
+    
+
+    return train_data_loader, val_data_loader
