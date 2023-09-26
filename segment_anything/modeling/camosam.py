@@ -16,6 +16,7 @@ import lightning as L
 from torchvision.utils import make_grid
 import wandb
 import gc
+import cv2
 import matplotlib.pyplot as plt
 import copy
 
@@ -97,9 +98,9 @@ class CamoSam(L.LightningModule):
 			data = [[i,j] for i,j in zip(np.linspace(0,1,data.shape[0]), data)]
 			table = wandb.Table(data=data, columns = ["Threshold", metric_])
 			if train:
-				wandb.log({f"PR_curve/Epoch:{self.current_epoch}_{batch_idx}_Train: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
+				wandb.log({f"PR_curve/Epoch:{self.current_epoch}/{batch_idx}_Train: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
 			else:
-				wandb.log({f"PR_curve/Epoch:{self.current_epoch}_{batch_idx}_Validation: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
+				wandb.log({f"PR_curve/Epoch:{self.current_epoch}/{batch_idx}_Validation: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
 
 	
 	@torch.no_grad()
@@ -113,20 +114,15 @@ class CamoSam(L.LightningModule):
 		table = wandb.Table(columns=['ID', 'Image'])
 
 		for id, (img, gt, pred) in enumerate(zip(img_list, gt_list, mask_list)):
-			print(img.shape, gt.shape, pred.shape)
-			plt.imshow(gt)
-			plt.show()
-			plt.imshow(pred)
-			plt.show()
 			mask_img = wandb.Image(img, masks = {
 				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}
 			})
 			
 			table.add_data(id, mask_img)
 		if train:
-			wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Train" : table})
+			wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Train" : table})
 		else:
-			wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Validation" : table})
+			wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Validation" : table})
 
 	def sigmoid_focal_loss(
 		self,
@@ -241,9 +237,10 @@ class CamoSam(L.LightningModule):
 			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1]) #[1, 720, 1280]
 			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
    
-			mask_list.append(pred_masks.cpu().detach().numpy()[0])
-			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
-			gt_mask_list.append(gt_mask.cpu().numpy()[0])
+			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
+			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()*255).astype(np.uint8))
+			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
+			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
 			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
 			union = torch.sum(pred_masks, dim=(-1, -2))
@@ -296,10 +293,11 @@ class CamoSam(L.LightningModule):
    
 			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1]) #[1, 720, 1280]
 			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
-   
-			mask_list.append(pred_masks.cpu().detach().numpy()[0])
-			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
-			gt_mask_list.append(gt_mask.cpu().numpy()[0])
+			
+			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
+			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()*255).astype(np.uint8))
+			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
+			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
 			
 			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))

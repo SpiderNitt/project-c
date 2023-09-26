@@ -1,14 +1,17 @@
 import lightning as L
 import torch
-from torch.utils.data import DataLoader
 
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 from omegaconf import OmegaConf
 
 from segment_anything import sam_model_registry
-from segment_anything.modeling import ImageLogger, CamoSam
-from dataloaders import VideoDataset, get_loader
+from segment_anything.modeling import CamoSam
+import sys
+sys.path.append("dataloaders/")
+# from dataloaders.MoCA import get_loader
+
+from dataloaders.vos_dataset import get_loader
 
 import os
 
@@ -19,13 +22,53 @@ import os
 #                     'Adp-F'     =>  Adaptive F-measure
 #                     'Wgt-F'     =>  Weighted F-measure
 
+# config = {
+#     "precision": 32,
+#     "seq_len": 4,
+#     "num_devices": 1,
+#     "batch_size": 2,
+#     "num_workers": 0,
+#     "num_epochs": 50,
+#     "metric_train_eval_interval": 20,
+#     "log_every_n_steps": 1,
+#     "log_metrics": ['MAE', 'E-measure', 'S-measure', 'Max-F', 'Adp-F', 'Wgt-F'],
+#     "img_size": 1024,
+#     "out_dir": "/",
+#     "opt": {
+#         "learning_rate": 8e-4,
+#         "weight_decay": 1e-4,
+#         "decay_factor": 10,
+#         "steps": [60000, 86666],
+#         "warmup_steps": 250,
+#     },
+#     "model": {
+#         "type": "vit_b",
+#         "checkpoint": "sam_vit_b_01ec64.pth",
+#         "freeze": {
+#             "image_encoder": True,
+#             "prompt_encoder": True,
+#             "mask_decoder": True,
+#         },
+#     },
+#     "dataset": {
+#         "train": {
+#             "root_dir": "raw/MoCA-Mask/MoCA_Video",
+#         },
+#         "val": {
+#             "root_dir": "raw/MoCA-Mask/MoCA_Video",
+#         },
+#     },
+# }
+
 config = {
+    "train_split": 0.93,
     "precision": 32,
     "seq_len": 4,
     "num_devices": 1,
     "batch_size": 2,
     "num_workers": 0,
-    "num_epochs": 10,
+    "num_epochs": 50,
+    "augmentation_fps_max_frame_skip":5,
     "metric_train_eval_interval": 20,
     "log_every_n_steps": 1,
     "log_metrics": ['MAE', 'E-measure', 'S-measure', 'Max-F', 'Adp-F', 'Wgt-F'],
@@ -48,12 +91,8 @@ config = {
         },
     },
     "dataset": {
-        "train": {
-            "root_dir": "raw/MoCA-Mask/MoCA_Video",
-        },
-        "val": {
-            "root_dir": "raw/MoCA-Mask/MoCA_Video",
-        },
+            "root_dir": "raw/DAVIS/",
+
     },
 }
 
@@ -66,7 +105,12 @@ model = CamoSam(cfg, model)
 # resume_path = "/content/drive/MyDrive/Group3/sam-finetuning/sam_vit_b_01ec64.pth"
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
 
-train_dataloader, validation_dataloader = get_loader(cfg.dataset.train.root_dir, cfg.batch_size, cfg.seq_len)
+train_dataloader, validation_dataloader = get_loader(cfg.dataset.root_dir, 
+                                                     train_split=cfg.train_split,
+                                                    batchsize= cfg.batch_size,  
+                                                    max_jump = cfg.augmentation_fps_max_frame_skip,
+                                                    num_frames=cfg.seq_len,  
+                                                    max_num_obj=1, )
 
 wandblogger = WandbLogger(project="Propagation")
 wandblogger.experiment.config.update(config)
