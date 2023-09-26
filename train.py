@@ -22,6 +22,7 @@ import os
 #                     'Adp-F'     =>  Adaptive F-measure
 #                     'Wgt-F'     =>  Weighted F-measure
 
+############## MoCA
 # config = {
 #     "precision": 32,
 #     "seq_len": 4,
@@ -59,7 +60,7 @@ import os
 #         },
 #     },
 # }
-
+############## DAVIS
 config = {
     "train_split": 0.93,
     "precision": 32,
@@ -105,6 +106,11 @@ model = CamoSam(cfg, model)
 # resume_path = "/content/drive/MyDrive/Group3/sam-finetuning/sam_vit_b_01ec64.pth"
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
 
+
+# MoCA
+# train_dataloader = get_loader(cfg.dataset.train.root_dir, cfg.batch_size, cfg.seq_len)
+
+# DAVIS
 train_dataloader, validation_dataloader = get_loader(cfg.dataset.root_dir, 
                                                      train_split=cfg.train_split,
                                                     batchsize= cfg.batch_size,  
