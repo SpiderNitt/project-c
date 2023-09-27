@@ -9,8 +9,8 @@ from segment_anything import sam_model_registry
 from segment_anything.modeling import CamoSam
 import sys
 sys.path.append("dataloaders/")
-# from dataloaders.MoCA import get_loader
 
+# from dataloaders.MoCA import get_loader
 from dataloaders.vos_dataset import get_loader
 
 import os
@@ -22,7 +22,7 @@ import os
 #                     'Adp-F'     =>  Adaptive F-measure
 #                     'Wgt-F'     =>  Weighted F-measure
 
-############## MoCA
+############# MoCA
 # config = {
 #     "precision": 32,
 #     "seq_len": 4,
@@ -60,6 +60,7 @@ import os
 #         },
 #     },
 # }
+
 ############## DAVIS
 config = {
     "train_split": 0.93,
@@ -107,8 +108,8 @@ model = CamoSam(cfg, model)
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
 
 
-# MoCA
-# train_dataloader = get_loader(cfg.dataset.train.root_dir, cfg.batch_size, cfg.seq_len)
+# # MoCA
+# train_dataloader, validation_dataloader = get_loader(cfg.dataset.train.root_dir, cfg.batch_size, cfg.seq_len)
 
 # DAVIS
 train_dataloader, validation_dataloader = get_loader(cfg.dataset.root_dir, 

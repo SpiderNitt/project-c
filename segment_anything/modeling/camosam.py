@@ -114,6 +114,8 @@ class CamoSam(L.LightningModule):
 		table = wandb.Table(columns=['ID', 'Image'])
 
 		for id, (img, gt, pred) in enumerate(zip(img_list, gt_list, mask_list)):
+			gt[gt!=0] = 255
+			pred[pred!=0] = 200
 			mask_img = wandb.Image(img, masks = {
 				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}
 			})
@@ -238,7 +240,7 @@ class CamoSam(L.LightningModule):
 			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
    
 			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
-			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()*255).astype(np.uint8))
+			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
 			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
 			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
 			
@@ -295,7 +297,7 @@ class CamoSam(L.LightningModule):
 			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
 			
 			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
-			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()*255).astype(np.uint8))
+			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
 			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
 			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
 			

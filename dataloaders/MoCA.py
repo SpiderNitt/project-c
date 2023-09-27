@@ -54,14 +54,16 @@ def randomRotation(imgs, label):
 
 def colorEnhance(imgs):
     for i in range(len(imgs)):
-        bright_intensity = random.randint(5, 15) / 10.0
+        bright_intensity = random.randint(75, 125) / 100 # +- 25%
         imgs[i] = ImageEnhance.Brightness(imgs[i]).enhance(bright_intensity)
-        contrast_intensity = random.randint(5, 15) / 10.0
+        contrast_intensity = random.randint(75, 125) / 100 # +- 25%
         imgs[i] = ImageEnhance.Contrast(imgs[i]).enhance(contrast_intensity)
-        color_intensity = random.randint(0, 20) / 10.0
+        color_intensity = random.randint(5, 15) / 10.0 
         imgs[i] = ImageEnhance.Color(imgs[i]).enhance(color_intensity)
         sharp_intensity = random.randint(0, 30) / 10.0
         imgs[i] = ImageEnhance.Sharpness(imgs[i]).enhance(sharp_intensity)
+
+        # print(bright_intensity, contrast_intensity, color_intensity, sharp_intensity)
     return imgs
 
 
@@ -90,6 +92,7 @@ class VideoDataset(data.Dataset):
         seq_len=4,
         trainsize=1024,
         split="TrainDataset_per_sq",
+        finetune = True
     ):
         self.seq_len = seq_len
         self.trainsize = trainsize
@@ -97,6 +100,7 @@ class VideoDataset(data.Dataset):
         self.image_list = []
         self.gt_list = []
         self.extra_info = []
+        self.finetune = finetune
 
         root = Path(dataset)
         img_format = "*.jpg"
@@ -136,11 +140,12 @@ class VideoDataset(data.Dataset):
         # print(names)
         scene = self.image_list[index][0].split("/")[-3]
 
-        imgs, all_gt = cv_random_flip(imgs, all_gt)
-        # imgs, all_gt = randomCrop(imgs, all_gt)
-        imgs, all_gt = randomRotation(imgs, all_gt)
-        imgs = colorEnhance(imgs)
-        all_gt = randomPeper(all_gt)
+        if self.finetune:
+            imgs, all_gt = cv_random_flip(imgs, all_gt)
+            # imgs, all_gt = randomCrop(imgs, all_gt)
+            imgs, all_gt = randomRotation(imgs, all_gt)
+            imgs = colorEnhance(imgs)
+            # all_gt = randomPeper(all_gt)
 
         for i in range(len(imgs)):
             imgs[i] = torch.as_tensor(
@@ -192,7 +197,7 @@ def get_loader(
     pin_memory=True,
     collate_fn=collate_fn,
 ):
-    train_dataset = VideoDataset(dataset, seq_len, trainsize, split=train_split)
+    train_dataset = VideoDataset(dataset, seq_len, trainsize, split=train_split, finetune=True)
     train_data_loader = data.DataLoader(
         dataset=train_dataset,
         batch_size=batchsize,
@@ -202,7 +207,7 @@ def get_loader(
         collate_fn=collate_fn,
     )
     
-    val_dataset = VideoDataset(dataset, seq_len, trainsize, split=validation_split)
+    val_dataset = VideoDataset(dataset, seq_len, trainsize, split=validation_split, finetune=False)
     val_data_loader = data.DataLoader(
         dataset=val_dataset,
         batch_size=batchsize,
