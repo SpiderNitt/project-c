@@ -34,12 +34,14 @@ class CamoSam(L.LightningModule):
 		"""
 		super().__init__()
 		self.model = model
+  
+        #TODO Set freezing and managing adapter weights and efficient saving
 		for param in self.model.parameters():
 			param.requires_grad = False
-		
-		for param in self.model.propagation_module.parameters():
+   
+		for param in self.model.prompt_encoder.parameters():
 			param.requires_grad = True
-	
+		
 		self.cfg = config
 		self.batch_freq = self.cfg.metric_train_eval_interval
 
@@ -104,21 +106,41 @@ class CamoSam(L.LightningModule):
 
 	
 	@torch.no_grad()
-	def log_images(self,img_list, mask_list, gt_list, batch_idx, train=True):
+	def log_images(self,img_list, mask_list, gt_list, prompt_point, prompt_mask, batch_idx, train=True):
 
 		# num_maks = gt_list[0].shape[0]
 		# gt_grid = make_grid(torch.cat(gt_list, dim=0), n_row=len(gt_list))
 		# mask_grid = make_grid(torch.cat(mask_list, dim=0), nrow=len(mask_list))
 		# self.log_dict({"images" : wandb.Image(make_grid(img_list)), "gt_mask" : wandb.Image(gt_grid), "masks" : wandb.Image(mask_grid)})
-
+		
+		prompt_mask = prompt_mask*255
 		table = wandb.Table(columns=['ID', 'Image'])
 
-		for id, (img, gt, pred) in enumerate(zip(img_list, gt_list, mask_list)):
-			mask_img = wandb.Image(img, masks = {
-				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}
-			})
+		for id, (img, gt, pred, point, mask) in enumerate(zip(img_list, gt_list, mask_list, prompt_point, prompt_mask)):
+      
 			
+			gt[gt!=0] = 255
+			pred[pred!=0] = 200
+   
+			log_masks = {
+				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}, 
+			}
+
+			if mask is not None:
+				mask[mask!=0] = 150
+				log_masks["mask prompt"] : {"mask_data" : mask}
+
+			if point is not None:
+				point_as_mask = np.zeros((pred.shape))
+				for coords in point:
+					point_as_mask = cv2.circle(point_as_mask, coords, radius=10, color=100, thickness=-1)
+
+				point_as_mask[point_as_mask!=0] = 100
+				log_masks["point prompt"] = {"mask_data": point_as_mask}
+   
+			mask_img = wandb.Image(img, masks=log_masks)
 			table.add_data(id, mask_img)
+
 		if train:
 			wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Train" : table})
 		else:
@@ -227,20 +249,25 @@ class CamoSam(L.LightningModule):
 		img_list = []
 		mask_list = []
 		gt_mask_list = []
+  
+		prompt_point = []
+		prompt_mask = []
 
 		for each_output, image_record in zip(output, batch):
 			# compute batch_iou of pred_mask and gt_mask
 			# H,W varies based on video
 			# each_output - [1, 1, 720, 1280] (no.of prompts x multimask = 1 x H x W) image_record - [720, 1280] each_output["iou_predictions"] - [1,1]
 			
-   
 			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1]) #[1, 720, 1280]
 			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
    
 			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
-			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()*255).astype(np.uint8))
+			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()))
 			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
 			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
+   
+			prompt_point.append(image_record['point_coords'])
+			prompt_mask.append(image_record['mask_input'])
 			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
 			union = torch.sum(pred_masks, dim=(-1, -2))
@@ -263,7 +290,7 @@ class CamoSam(L.LightningModule):
 		if self.check_frequency(batch_idx):
 			metrics = batch_measure(gt_mask_list, mask_list, measures=self.cfg.log_metrics)
 			self.log_pr_metrics(metrics, batch_idx=batch_idx,train=True)
-			self.log_images(img_list, mask_list, gt_mask_list, batch_idx=batch_idx, train=True)
+			self.log_images(img_list, mask_list, gt_mask_list, prompt_point, prompt_mask, batch_idx=batch_idx, train=True)
 			metrics = {'Metric/train_'+i:metrics[i] for i in metrics}
 			del metrics["Metric/train_Fmeasure_all_thresholds"], metrics["Metric/train_Precision"], metrics["Metric/train_Recall"]
 		
@@ -284,7 +311,10 @@ class CamoSam(L.LightningModule):
 		img_list = []
 		mask_list = []
 		gt_mask_list = []
-
+  
+		prompt_point = []
+		prompt_mask = []
+  
 		for each_output, image_record in zip(output, batch):
 			# compute batch_iou of pred_mask and gt_mask
 			# H,W varies based on video
@@ -295,9 +325,12 @@ class CamoSam(L.LightningModule):
 			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
 			
 			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
-			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()*255).astype(np.uint8))
+			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
 			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
 			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
+			
+			prompt_point.append(image_record['point_coords'])
+			prompt_mask.append(image_record['mask_input'])
 			
 			
 			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
@@ -321,7 +354,7 @@ class CamoSam(L.LightningModule):
 		if self.check_frequency(batch_idx):
 			metrics = batch_measure(gt_mask_list, mask_list, measures=self.cfg.log_metrics)
 			self.log_pr_metrics(metrics, batch_idx=batch_idx,train=False)
-			self.log_images(img_list, mask_list, gt_mask_list, batch_idx=batch_idx, train=False)
+			self.log_images(img_list, mask_list, gt_mask_list, prompt_point, prompt_mask, batch_idx=batch_idx, train=False)
 			metrics = {'Metric/validation_'+i:metrics[i] for i in metrics}
 			del metrics["Metric/validation_Fmeasure_all_thresholds"], metrics["Metric/validation_Precision"], metrics["Metric/validation_Recall"]
 		

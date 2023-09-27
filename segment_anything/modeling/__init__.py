@@ -11,4 +11,3 @@ from .prompt_encoder import PromptEncoder
 from .transformer import TwoWayTransformer
 from .camosam import CamoSam
 from .logger import ImageLogger
-from .propagation_module import PropagationModule
