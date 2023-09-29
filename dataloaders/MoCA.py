@@ -254,7 +254,7 @@ class VideoDataset(data.Dataset):
         
         return {
             "image": imgs, # Tensor(3, H (transformed), 1024)
-            "gt_mask": gt_mask/255.0, # Tensor(H, W)
+            "gt_mask": gt_mask, # Tensor(H, W)
             "original_size": gt_mask.shape, # List (H,W) - [720, 1280]
             "point_coords": point_prompt, # numpy array (N,2) - 
             "point_labels": label_prompt, # numpy array (N,)
