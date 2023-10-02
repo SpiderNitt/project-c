@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 import numpy as np
 from metrics import batch_measure
-from lightning.pytorch.utilities.types import STEP_OUTPUT
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -17,8 +17,7 @@ from torchvision.utils import make_grid
 import wandb
 import gc
 import cv2
-import matplotlib.pyplot as plt
-import copy
+import os
 
 class CamoSam(L.LightningModule):
 	mask_threshold: float = 0.0
@@ -36,24 +35,26 @@ class CamoSam(L.LightningModule):
 		self.model = model
   
         #TODO Set freezing and managing adapter weights and efficient saving
-		# for param in self.model.parameters():
-		# 	param.requires_grad = False
+		for param in self.model.parameters():
+			param.requires_grad = False
    
-		# for param in self.model.prompt_encoder.parameters():
-			# param.requires_grad = True
+		for param in self.model.mask_decoder.parameters():
+			param.requires_grad = True
 
-		for n,p in model.named_parameters():
+		# for n,p in model.named_parameters():
 
-			# print(n)
-			if  'initial' in n or 'adapter' in n:
-			# if 'image_encoder' in n:
-				print(n)
-				p.requires_grad_(True)
-			else :
-				p.requires_grad_(False)
+		# 	# print(n)
+		# 	if  'initial' in n or 'adapter' in n:
+		# 	# if 'image_encoder' in n:
+		# 		# print(n)
+		# 		p.requires_grad_(True)
+		# 	else :
+		# 		p.requires_grad_(False)
 		
 		self.cfg = config
 		self.batch_freq = self.cfg.metric_train_eval_interval
+		self.train_benchmark = []
+		self.val_benchmark = []
 
 	def forward(
 		self,
@@ -249,6 +250,46 @@ class CamoSam(L.LightningModule):
 		# scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, self.lr_lambda)
 		return [optimizer] #, [scheduler]
 
+	def on_validation_epoch_end(self):
+		#TODO Partially save models
+		# weights = os.listdir("checkpoint/")
+		# last_weight = 
+		avg_val = {i:0 for i in list(self.val_benchmark[0].keys()) }
+
+		for avg in self.val_benchmark:
+			for key in avg:
+				avg_val[key] += avg[key]
+    
+		avg_val = {i+"_Epoch":avg_val[i]/len(self.val_benchmark) for i in avg_val}
+	
+		self.log_dict(avg_val, on_epoch=True, prog_bar=True)
+		self.val_benchmark = []  
+
+  
+		if (self.current_epoch-1) % self.cfg.save_log_weights_interval == 0:
+			# 0/0
+			print("CHECK POINT WEIGHT OF IS AVAILABLE:", self.current_epoch)
+			import time
+			time.sleep(5)
+			# wandb.save
+			pass
+			
+   
+	def on_train_epoch_end(self):
+		#TODO Partially save models
+		# weights = os.listdir("checkpoint/")
+		# last_weight = 
+		avg_train = {i:0 for i in list(self.train_benchmark[0].keys()) }
+
+		for avg in self.train_benchmark:
+			for key in avg:
+				avg_train[key] += avg[key]
+    
+		avg_train = {i+"_Epoch":avg_train[i]/len(self.train_benchmark) for i in avg_train}
+	
+		self.log_dict(avg_train, on_epoch=True, prog_bar=True)
+		self.train_benchmark = []
+
 	def training_step(self, batch, batch_idx):
 		bs = len(batch)
 		output = self(batch, False)
@@ -304,10 +345,11 @@ class CamoSam(L.LightningModule):
 			metrics = {'Metric/train_'+i:metrics[i] for i in metrics}
 			del metrics["Metric/train_Fmeasure_all_thresholds"], metrics["Metric/train_Precision"], metrics["Metric/train_Recall"]
 		
-		del img_list, mask_list, gt_mask_list
+		# del img_list, mask_list, gt_mask_list
 		gc.collect()
+		self.train_benchmark.append([{"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou} | metrics])
 
-		self.log_dict({"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou} | metrics, on_step=True, on_epoch=True, prog_bar=True)
+		self.log_dict(self.train_benchmark[-1], on_step=True, on_epoch=True, prog_bar=True)
 
 		return loss_total
 	
@@ -362,15 +404,17 @@ class CamoSam(L.LightningModule):
 
 		metrics = {}
 		if self.check_frequency(batch_idx):
+			self.log_images(img_list, mask_list, gt_mask_list, prompt_point, prompt_mask, batch_idx=batch_idx, train=False)
 			metrics = batch_measure(gt_mask_list, mask_list, measures=self.cfg.log_metrics)
 			self.log_pr_metrics(metrics, batch_idx=batch_idx,train=False)
-			self.log_images(img_list, mask_list, gt_mask_list, prompt_point, prompt_mask, batch_idx=batch_idx, train=False)
+			
 			metrics = {'Metric/validation_'+i:metrics[i] for i in metrics}
 			del metrics["Metric/validation_Fmeasure_all_thresholds"], metrics["Metric/validation_Precision"], metrics["Metric/validation_Recall"]
 		
 		del img_list, mask_list, gt_mask_list
 		gc.collect()
 
-		self.log_dict({"Loss/validation_total_loss" : loss_total, "Loss/validation_focal_loss" : avg_focal, "Loss/validation_dice_loss" : avg_dice, "Loss/validation_iou_loss" : avg_iou} | metrics, on_step=True, on_epoch=True, prog_bar=True)
+		self.val_benchmark.append({"Loss/validation_total_loss" : loss_total, "Loss/validation_focal_loss" : avg_focal, "Loss/validation_dice_loss" : avg_dice, "Loss/validation_iou_loss" : avg_iou} | metrics)
+		self.log_dict(self.val_benchmark[-1], on_step=True, on_epoch=True, prog_bar=True)
 
 		return loss_total

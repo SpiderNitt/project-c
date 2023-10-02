@@ -100,19 +100,19 @@ class Adapter(nn.Module):
  
 
     def forward(self, x):
-        print(f'conv_input {x.shape}')
+        # print(f'conv_input {x.shape}')
         output = self.conv1(x)
-        print(f'conv_1 {output.shape}')
+        # print(f'conv_1 {output.shape}')
         output = self.activation(output)
 
         # output = self.bn(output) if self.use_bn else output
         output = self.conv2(output)
-        print(f'conv2 {output.shape}')
+        # print(f'conv2 {output.shape}')
 
         output = self.activation(output)
         output = self.conv3(output)
 
-        print(f'conv3 {output.shape}')
+        # print(f'conv3 {output.shape}')
 
 
         if self.gate is not None:
@@ -248,15 +248,15 @@ class ImageEncoderViT(nn.Module):
         if self.pos_embed is not None:
             x = x + self.pos_embed 
 
-        print(x.shape) #[B,64,64,768]
+        # print(x.shape) #[B,64,64,768]
         
        # (B,768,64,64) ----> (B,64,64,768)
 
         
         for blk, adapter in zip(self.blocks,self.adapter):
-            print(f'blk_input {x.shape}') #[B,64,64,768]
+            # print(f'blk_input {x.shape}') #[B,64,64,768]
             x = blk(x)
-            print(f'blk_output {x.shape}') #[B,64,64,768]
+            # print(f'blk_output {x.shape}') #[B,64,64,768]
             adapter_output = x + adapter(extracted_features.permute(0,3,2,1)).permute(0,3,2,1)
             extracted_features = adapter_output
 

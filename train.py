@@ -29,10 +29,11 @@ config = {
     "num_devices": 1,
     "batch_size": 2,
     "num_workers": 0,
-    "num_epochs": 50,
-    "max_prompt_points":3,
-    "iou_range": [0.05, 0.4], # mask prompt
+    "num_epochs": 20,
+    "max_prompt_points":2,
+    "iou_range": [0.02, 0.2], # mask prompt
     "metric_train_eval_interval": 20,
+    "save_log_weights_interval":2,
     "log_every_n_steps": 1,
     "log_metrics": ['MAE', 'E-measure', 'S-measure', 'Max-F', 'Adp-F', 'Wgt-F'],
     "img_size": 1024,
@@ -103,7 +104,7 @@ config = {
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 cfg = OmegaConf.create(config)
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model = sam_model_registry['vit_b'](checkpoint=None, cfg=cfg)
+model = sam_model_registry['vit_b'](checkpoint="sam_vit_b_01ec64.pth", cfg=cfg)
 model = CamoSam(cfg, model)
 # resume_path = "/content/drive/MyDrive/Group3/sam-finetuning/sam_vit_b_01ec64.pth"
 # model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
@@ -123,7 +124,7 @@ train_dataloader, validation_dataloader = get_loader(cfg.dataset.train.root_dir,
 wandblogger = WandbLogger(project="Adapter")
 wandblogger.experiment.config.update(config)
 checkpoint_callback = ModelCheckpoint(
-    dirpath="./checkpoint", every_n_epochs=1, save_top_k=-1
+    dirpath="./checkpoint", every_n_epochs=cfg.save_log_weights_interval, save_top_k=-1
 )
 trainer = L.Trainer(
     accelerator=device,
@@ -135,4 +136,5 @@ trainer = L.Trainer(
     log_every_n_steps=cfg.log_every_n_steps,
 )
 
+trainer.validate(model, validation_dataloader)
 trainer.fit(model, train_dataloader, validation_dataloader)

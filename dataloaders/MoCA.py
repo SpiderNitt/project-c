@@ -109,6 +109,7 @@ class VideoDataset(data.Dataset):
         split="TrainDataset_per_sq",
         iou_range = [0.05, 0.4], # 5 to 40% overlap
         max_prompt_points = 3,
+        is_validation_prompt_mid = True,
         finetune = False
     ):
         self.seq_len = seq_len
@@ -120,6 +121,7 @@ class VideoDataset(data.Dataset):
         self.iou_range = iou_range
         self.max_prompt_points = max_prompt_points
         self.finetune = finetune
+        self.is_validation_prompt_mid = is_validation_prompt_mid
         
         seedval = 75
         self.rng = default_rng(seed=seedval)
@@ -153,7 +155,22 @@ class VideoDataset(data.Dataset):
             
         return self.uniform_point_prompt.pop()
         
-
+    def get_midpoint(self,a_mask):
+        ''' Get the bounding box of a given mask '''
+        pos = np.where(a_mask)
+        xmin = np.min(pos[1])
+        xmax = np.max(pos[1])
+        ymin = np.min(pos[0])
+        ymax = np.max(pos[0])
+        return [(ymax+ymin)//2, (xmin+xmax)//2, ]
+    
+    def NClosest(self, all_points, target, N):
+    
+        all_points.sort(key = lambda K: (K[0]-target[0])**2 + (K[1]-target[1])**2)
+    
+        return all_points[:N]
+ 
+ 
     def __getitem__(self, index):
         imgs = []
         names = []
@@ -184,7 +201,7 @@ class VideoDataset(data.Dataset):
         
 
 
-        if random.choice([True, False]): # mask prompt
+        if random.choice([True, False]) and not self.finetune: # mask prompt
             matching_iou = False
             img = (gt_mask.numpy()*255).astype(np.uint8)
             
@@ -235,19 +252,32 @@ class VideoDataset(data.Dataset):
                         break
 
         if random.choice([True, False]) or (mask_prompt is None): #point prompt
-            possible_points = gt_mask.numpy().nonzero()
+            possible_points = list(gt_mask.numpy().nonzero())
             if len(possible_points) != 0:
                 self.n_points+=1
                 self.n_points = (self.n_points%self.max_prompt_points) + 1 # uniform distribution
                 n_prompt_points = self.n_points
 
                 point_prompt = []
-                for _ in range(n_prompt_points):
-                    point_prompt_idx = int(self.sample_point_uniform()*len(possible_points[0])) % len(possible_points[0])
-                    point_prompt.append([possible_points[1][point_prompt_idx], possible_points[0][point_prompt_idx]])
-
-                point_prompt = np.asarray(point_prompt)
-                label_prompt = np.asarray([1]*n_prompt_points)
+                if not self.is_validation_prompt_mid:
+                    for _ in range(n_prompt_points):
+                        point_prompt_idx = int(self.sample_point_uniform()*len(possible_points[0])) % len(possible_points[0])
+                        point_prompt.append([possible_points[1][point_prompt_idx], possible_points[0][point_prompt_idx]])
+                    point_prompt = np.asarray(point_prompt)  
+                    label_prompt = np.asarray([1]*n_prompt_points)
+                else:
+                    mid = self.get_midpoint(gt_mask.numpy())
+                    # print(mid)
+                    possible_points = [list(x) for x in zip(possible_points[0], possible_points[1])]
+                    # print(possible_points)
+                    point_prompt = self.NClosest(possible_points, mid, 1)
+                    point_prompt = [point_prompt[0][::-1]]
+                    point_prompt = np.asarray(point_prompt)  
+                    label_prompt = np.asarray([1])
+                    
+                    # print(point_prompt)
+                    
+                
             
         if (point_prompt is None) and (mask_prompt is None):
             return self.__getitem__(index+1)
@@ -292,7 +322,7 @@ def get_loader(
     pin_memory=True,
     collate_fn=collate_fn,
 ):
-    train_dataset = VideoDataset(dataset, seq_len, trainsize, split=train_split, iou_range=iou_range, max_prompt_points=max_prompt_points, finetune=True)
+    train_dataset = VideoDataset(dataset, seq_len, trainsize, split=train_split, iou_range=iou_range, max_prompt_points=max_prompt_points, finetune=True, is_validation_prompt_mid = False)
     train_data_loader = data.DataLoader(
         dataset=train_dataset,
         batch_size=batchsize,
@@ -302,7 +332,7 @@ def get_loader(
         collate_fn=collate_fn,
     )
     
-    val_dataset = VideoDataset(dataset, seq_len, trainsize, split=validation_split, iou_range=iou_range, max_prompt_points=max_prompt_points, finetune=True)
+    val_dataset = VideoDataset(dataset, seq_len, trainsize, split=validation_split, iou_range=iou_range, max_prompt_points=max_prompt_points, finetune=False, is_validation_prompt_mid = True)
     val_data_loader = data.DataLoader(
         dataset=val_dataset,
         batch_size=batchsize,
