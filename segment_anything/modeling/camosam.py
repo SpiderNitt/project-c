@@ -36,11 +36,21 @@ class CamoSam(L.LightningModule):
 		self.model = model
   
         #TODO Set freezing and managing adapter weights and efficient saving
-		for param in self.model.parameters():
-			param.requires_grad = False
+		# for param in self.model.parameters():
+		# 	param.requires_grad = False
    
-		for param in self.model.prompt_encoder.parameters():
-			param.requires_grad = True
+		# for param in self.model.prompt_encoder.parameters():
+			# param.requires_grad = True
+
+		for n,p in model.named_parameters():
+
+			# print(n)
+			if  'initial' in n or 'adapter' in n:
+			# if 'image_encoder' in n:
+				print(n)
+				p.requires_grad_(True)
+			else :
+				p.requires_grad_(False)
 		
 		self.cfg = config
 		self.batch_freq = self.cfg.metric_train_eval_interval
@@ -53,7 +63,7 @@ class CamoSam(L.LightningModule):
 		"""
 		Predicts masks end-to-end from provided images and prompts.
 		If prompts are not known in advance, using SamPredictor is
-		recommended over calling the model directly.
+		recommended over calling the model directly.__
 
 		Arguments:
 		  batched_input (list(dict)): A list over input images, each a

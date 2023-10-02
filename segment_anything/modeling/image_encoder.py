@@ -7,10 +7,118 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from typing import Optional, Tuple, Type
 
 from .common import LayerNorm2d, MLPBlock
+from pytorch_wavelets import DWTForward
+
+class ResidualBlock(nn.Module):
+    def __init__(self, inchannel, outchannel, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.left = nn.Sequential(
+            nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, groups = inchannel//2, padding=1, bias=False),
+            nn.BatchNorm2d(outchannel),
+            nn.ReLU(inplace=True),
+        )
+        self.shortcut = nn.Sequential()
+        if stride != 1 or inchannel != outchannel:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(inchannel, outchannel, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(outchannel)
+            )
+            
+    def forward(self, x):
+        out = self.left(x)
+        out = out + self.shortcut(x)
+        out = F.relu(out)
+        
+        return out
+
+
+class FeatureExtractor(nn.Module):
+        def __init__(self, ResidualBlock):
+            super().__init__()
+
+            self.inchannel = 64
+
+            self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size = 3 , stride=2, padding = 1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU() )
+
+            self.layer1 = self.make_layer(ResidualBlock, 96, 2, stride=1)
+            # self.layer2 = nn.MaxPool2d(2,stride = 2)
+            self.layer2 = self.make_layer(ResidualBlock, 96, 2, stride=2)
+            self.layer3 = self.make_layer(ResidualBlock, 192,2, stride=1)
+            self.layer4 = self.make_layer(ResidualBlock, 192, 2, stride=2)
+
+        
+        def make_layer(self, block, channels, num_blocks, stride):
+            strides = [stride] + [1] * (num_blocks - 1)
+            layers = []
+            for stride in strides:
+                layers.append(block(self.inchannel, channels, stride))
+                self.inchannel = channels
+            return nn.Sequential(*layers)
+
+        def forward(self, x):
+
+            out = self.conv1(x)
+            out = self.layer1(out)
+            out = self.layer2(out)
+            out = self.layer3(out)
+            out = self.layer4(out)
+
+            return out
+
+
+class Adapter(nn.Module):
+    """Conventional Adapter layer, in which the weights of up and down sampler modules
+    are parameters and are optimized."""
+
+    def __init__(self, input_dim, output_dim , hidden_dim = 128 , use_gate=True):
+        super().__init__()
+        # self.adapter_kind = adapter_kind
+        # self.use_bn = use_bn
+
+        if use_gate:
+            self.gate = nn.Parameter(torch.zeros(1))
+        else:
+            self.gate = None
+
+        self.activation = nn.ReLU(inplace=True)
+
+        self.conv1 = nn.Conv2d(input_dim,hidden_dim,1,bias = False)
+
+        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, 3, padding = 1, groups = hidden_dim, bias=False)
+        
+        self.conv3 = nn.Conv2d(hidden_dim, output_dim , 1 , bias=False)
+        
+        # if use_bn:
+            # self.bn = nn.BatchNorm2d(output_dim)
+
+ 
+
+    def forward(self, x):
+        print(f'conv_input {x.shape}')
+        output = self.conv1(x)
+        print(f'conv_1 {output.shape}')
+        output = self.activation(output)
+
+        # output = self.bn(output) if self.use_bn else output
+        output = self.conv2(output)
+        print(f'conv2 {output.shape}')
+
+        output = self.activation(output)
+        output = self.conv3(output)
+
+        print(f'conv3 {output.shape}')
+
+
+        if self.gate is not None:
+            output = self.gate * output
+
+        return output
 
 
 # This class and its supporting functions below lightly adapted from the ViTDet backbone available at: https://github.com/facebookresearch/detectron2/blob/main/detectron2/modeling/backbone/vit.py # noqa
@@ -102,16 +210,59 @@ class ImageEncoderViT(nn.Module):
             ),
             LayerNorm2d(out_chans),
         )
+        
+        self.initial = FeatureExtractor(ResidualBlock) 
+        self.initial2 = FeatureExtractor(ResidualBlock) 
+        self.initial3 = FeatureExtractor(ResidualBlock)
+        self.initial4 = FeatureExtractor(ResidualBlock) 
+
+        self.dwt = DWTForward(J=1, wave = 'haar',mode='zero')
+        self.adapter = nn.ModuleList()
+        for i in range(depth):
+            adapter = Adapter(input_dim = 768, output_dim= 768)
+            self.adapter.append(adapter)
+        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        #[b,c,h,w]
+        #[B,3,1024,1024]
+
+  
+        Yl,Yh = self.dwt(x)
+        # print(f'Y_h {len(Yh)}') #1
+
+        feature_1 = self.initial(Yl) #[B,3,512,512]
+
+        # print(f'tensor_shape {Yh[0].shape}') #[B,3,3,512,512]
+
+        feature_2 = self.initial2(Yh[0][:,:,0,:,:])
+        feature_3 = self.initial3(Yh[0][:,:,1,:,:])
+        feature_4 = self.initial4(Yh[0][:,:,2,:,:])
+
+   
+        
+        extracted_features = torch.concat([feature_1,feature_2,feature_3,feature_4],dim = 1).permute(0,3,2,1)
+        # print(f'resnet_features {extracted_features.shape}') 
+        
         x = self.patch_embed(x)
         if self.pos_embed is not None:
-            x = x + self.pos_embed
+            x = x + self.pos_embed 
 
-        for blk in self.blocks:
+        print(x.shape) #[B,64,64,768]
+        
+       # (B,768,64,64) ----> (B,64,64,768)
+
+        
+        for blk, adapter in zip(self.blocks,self.adapter):
+            print(f'blk_input {x.shape}') #[B,64,64,768]
             x = blk(x)
+            print(f'blk_output {x.shape}') #[B,64,64,768]
+            adapter_output = x + adapter(extracted_features.permute(0,3,2,1)).permute(0,3,2,1)
+            extracted_features = adapter_output
 
-        x = self.neck(x.permute(0, 3, 1, 2))
+
+
+        x = self.neck(adapter_output.permute(0, 3, 1, 2))
 
         return x
 
@@ -178,6 +329,7 @@ class Block(nn.Module):
 
         x = shortcut + x
         x = x + self.mlp(self.norm2(x))
+
 
         return x
 
