@@ -347,7 +347,7 @@ class CamoSam(L.LightningModule):
 		
 		# del img_list, mask_list, gt_mask_list
 		gc.collect()
-		self.train_benchmark.append([{"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou} | metrics])
+		self.train_benchmark.append({"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou} | metrics)
 
 		self.log_dict(self.train_benchmark[-1], on_step=True, on_epoch=True, prog_bar=True)
 

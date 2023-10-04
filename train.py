@@ -1,8 +1,8 @@
 import lightning as L
 import torch
-
+import wandb
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 from omegaconf import OmegaConf
 
 from segment_anything import sam_model_registry
@@ -24,6 +24,8 @@ import os
 
 ############## MoCA
 config = {
+    "model_checkpoint_at": "checkpoint/",
+    "save_log_weights_interval":2,
     "precision": 32,
     "seq_len": 4,
     "num_devices": 1,
@@ -33,7 +35,6 @@ config = {
     "max_prompt_points":2,
     "iou_range": [0.02, 0.2], # mask prompt
     "metric_train_eval_interval": 20,
-    "save_log_weights_interval":2,
     "log_every_n_steps": 1,
     "log_metrics": ['MAE', 'E-measure', 'S-measure', 'Max-F', 'Adp-F', 'Wgt-F'],
     "img_size": 1024,
@@ -101,6 +102,29 @@ config = {
 # }
 
 
+class WandB_Logger(Callback):
+    def __init__(self, cfg, wb):
+        self.logged_weight_epoch = 0
+        self.cfg = cfg
+        self.wb = wb
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if (pl_module.current_epoch) % self.cfg.save_log_weights_interval == 0 and pl_module.current_epoch >0:
+            model_name = f"{os.path.join(cfg.model_checkpoint_at, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
+            torch.save({
+                        'cfg': self.cfg,
+                        'epoch': pl_module.current_epoch,
+                        'model_state_dict': pl_module.model.state_dict(),
+                        'optimizer_state_dict': pl_module.optimizers().state_dict() if type(pl_module.optimizers())!=list else {},
+                        'benchmark': [pl_module.train_benchmark, pl_module.val_benchmark],
+            }, model_name)
+            print("UPLOADING MODEL TO W&B", model_name)
+            my_model = wandb.Artifact(f"model_{self.wb.id}", type="model")
+            my_model.add_file(model_name)
+            self.wb.log_artifact(my_model)
+            # Link the model to the Model Registry
+            self.wb.link_artifact(my_model, f"Adapter/TEST")
+
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 cfg = OmegaConf.create(config)
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -123,12 +147,12 @@ train_dataloader, validation_dataloader = get_loader(cfg.dataset.train.root_dir,
 
 wandblogger = WandbLogger(project="Adapter")
 wandblogger.experiment.config.update(config)
-checkpoint_callback = ModelCheckpoint(
-    dirpath="./checkpoint", every_n_epochs=cfg.save_log_weights_interval, save_top_k=-1
-)
+
+model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
+
 trainer = L.Trainer(
     accelerator=device,
-    callbacks=[checkpoint_callback],
+    callbacks=[model_weight_callback],
     precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
