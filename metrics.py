@@ -1,651 +1,255 @@
-import os
+from __future__ import absolute_import, division
+
 import cv2
-import sys
-import torch
 import numpy as np
-from glob import glob
-from tqdm import tqdm
-from scipy.ndimage import correlate
-from scipy.ndimage.morphology import distance_transform_edt
+from skimage.morphology import disk
+import math
 
-eps = sys.float_info.epsilon
+__all__ = ['batched_jaccard', 'batched_f_measure']
 
-'''
-CREDITS - 
 
-'''
+def batched_jaccard(y_true, y_pred, average_over_objects=True, nb_objects=None):
+    """ Batch jaccard similarity for multiple instance segmentation.
 
-@torch.no_grad()
-def batch_measure(batch_gt, batch_sm, measures, beta=np.sqrt(0.3), gt_threshold=0.5):
+    Jaccard similarity over two subsets of binary elements $A$ and $B$:
+
+    $$
+    \mathcal{J} = \\frac{A \\cap B}{A \\cup B}
+    $$
+
+    # Arguments
+        y_true: Numpy Array. Array of shape (B x H x W) and type integer giving the
+            ground truth of the object instance segmentation.
+        y_pred: Numpy Array. Array of shape (B x H x W) and type integer giving the
+            prediction of the object segmentation.
+        average_over_objects: Boolean. Weather or not to average the jaccard over
+            all the objects in the sequence. Default True.
+        nb_objects: Integer. Number of objects in the ground truth mask. If
+            `None` the value will be infered from `y_true`. Setting this value
+            will speed up the computation.
+
+    # Returns
+        ndarray: Returns an array of shape (B) with the average jaccard for
+            all instances at each frame if `average_over_objects=True`. If
+            `average_over_objects=False` returns an array of shape (B x nObj)
+            with nObj being the number of objects on `y_true`.
     """
-    function that calculates Saliency measures for given directories
+    y_true = np.asarray(y_true, dtype=np.int)
+    y_pred = np.asarray(y_pred, dtype=np.int)
+    if y_true.ndim != 3:
+        raise ValueError('y_true array must have 3 dimensions.')
+    if y_pred.ndim != 3:
+        raise ValueError('y_pred array must have 3 dimensions.')
+    if y_true.shape != y_pred.shape:
+        raise ValueError('y_true and y_pred must have the same shape. {} != {}'.format(y_true.shape, y_pred.shape))
 
-    arameters
-    ----------
-    gt_dir : str
-        The path to the ground truth directory
-    sm_dir : str
-        The path to the predicted saliency map directory
-    measures : list
-        list of measure names which need to be calculated
-        supported measures: 'MAE'       => Mean Squared Error
-                            'E-measure' =>  Enhanced-alignment measure
-                            'S-measure' =>  Structure-measure
-                            'Max-F'     =>  Maximum F-measure
-                            'Adp-F'     =>  Adaptive F-measure
-                            'Wgt-F'     =>  Weighted F-measure
-    save : str
-        If spesified, the results will be saved in 'save' directory
-    beta : float
-        beta parameter that is used in F-measure formula. default is sqrt(0.3)
-    gt_threshold : float
-        The threshold that is used to binrize ground truth maps.
-
-    Returns
-    -------
-    values : dictionary
-        a dict containing the results
-    """
-
-    values = dict()
-    for idx in measures:
-        values[idx] = list()
-        if idx == 'Max-F':
-            values['Precision'] = list()
-            values['Recall']    = list()
-
-    for gt,sm in zip(batch_gt,batch_sm):
-            gt, sm = normalize(gt, sm, gt_threshold)
-
-            if 'MAE' in measures:
-                values['MAE'].append(mean_square_error(gt, sm))
-            if 'E-measure' in measures:
-                values['E-measure'].append(e_measure(gt, sm))
-            if 'S-measure' in measures:
-                values['S-measure'].append(s_measure(gt, sm))
-            if 'Adp-F' in measures:
-                values['Adp-F'].append(adaptive_fmeasure(gt, sm, beta))
-            if 'Wgt-F' in measures:
-                values['Wgt-F'].append(weighted_fmeasure(gt, sm))
-            if 'Max-F' in measures:
-                prec, recall = prec_recall(gt, sm, 256)  # 256 thresholds between 0 and 1
-                values['Precision'].append(prec)
-                values['Recall'].append(recall)
-
-    if 'MAE' in measures:
-        values['MAE'] = np.mean(values['MAE'])
-
-    if 'E-measure' in measures:
-        values['E-measure'] = np.mean(values['E-measure'])
-
-    if 'S-measure' in measures:
-        values['S-measure'] = np.mean(values['S-measure'])
-
-    if 'Adp-F' in measures:
-        values['Adp-F'] = np.mean(values['Adp-F'])
-
-    if 'Wgt-F' in measures:
-        values['Wgt-F'] = np.mean(values['Wgt-F'])
-
-    if 'Max-F' in measures:
-        values['Precision'] = np.mean(np.hstack(values['Precision'][:]), 1)
-        values['Recall'] = np.mean(np.hstack(values['Recall'][:]), 1)
-        f_measures = (1 + beta ** 2) * values['Precision'] * values['Recall'] / (
-                beta ** 2 * values['Precision'] + values['Recall'])
-        values['Fmeasure_all_thresholds'] = f_measures
-        values['Max-F'] = np.max(f_measures)
-
-    return values
-
-
-
-def calculate_measures(gt_dir, sm_dir, measures, save=False, beta=np.sqrt(0.3), gt_threshold=0.5):
-    """
-    function that calculates Saliency measures for given directories
-
-    arameters
-    ----------
-    gt_dir : str
-        The path to the ground truth directory
-    sm_dir : str
-        The path to the predicted saliency map directory
-    measures : list
-        list of measure names which need to be calculated
-        supported measures: 'MAE'       => Mean Squared Error
-                            'E-measure' =>  Enhanced-alignment measure
-                            'S-measure' =>  Structure-measure
-                            'Max-F'     =>  Maximum F-measure
-                            'Adp-F'     =>  Adaptive F-measure
-                            'Wgt-F'     =>  Weighted F-measure
-    save : str
-        If spesified, the results will be saved in 'save' directory
-    beta : float
-        beta parameter that is used in F-measure formula. default is sqrt(0.3)
-    gt_threshold : float
-        The threshold that is used to binrize ground truth maps.
-
-    Returns
-    -------
-    values : dictionary
-        a dict containing the results
-    """
-
-    values = dict()
-    for idx in measures:
-        values[idx] = list()
-        if idx == 'Max-F':
-            values['Precision'] = list()
-            values['Recall']    = list()
-
-    for gt_name in tqdm(glob(os.path.join(gt_dir, '*'))):
-        # print(gt_name)
-        _, name = os.path.split(gt_name)
-        # print(name) #----> 0000.png
-        # print(name[:-4])
-        sm_name = os.path.join(sm_dir, name)
-        # print(sm_name)
-
-        if os.path.exists(sm_name):
-
-            gt, sm = read_and_normalize(gt_name, sm_name, gt_threshold)
-
-            if 'MAE' in measures:
-                values['MAE'].append(mean_square_error(gt, sm))
-            if 'E-measure' in measures:
-                values['E-measure'].append(e_measure(gt, sm))
-            if 'S-measure' in measures:
-                values['S-measure'].append(s_measure(gt, sm))
-            if 'Adp-F' in measures:
-                values['Adp-F'].append(adaptive_fmeasure(gt, sm, beta))
-            if 'Wgt-F' in measures:
-                values['Wgt-F'].append(weighted_fmeasure(gt, sm))
-            if 'Max-F' in measures:
-                prec, recall = prec_recall(gt, sm, 256)  # 256 thresholds between 0 and 1
-                values['Precision'].append(prec)
-                values['Recall'].append(recall)
-        else:
-            print("\n{} not found!".format(os.path.basename(sm_name)))
-            print('---' * 10)
-
-
-    if 'MAE' in measures:
-        values['MAE'] = np.mean(values['MAE'])
-
-    if 'E-measure' in measures:
-        values['E-measure'] = np.mean(values['E-measure'])
-
-    if 'S-measure' in measures:
-        values['S-measure'] = np.mean(values['S-measure'])
-
-    if 'Adp-F' in measures:
-        values['Adp-F'] = np.mean(values['Adp-F'])
-
-    if 'Wgt-F' in measures:
-        values['Wgt-F'] = np.mean(values['Wgt-F'])
-
-    if 'Max-F' in measures:
-        values['Precision'] = np.mean(np.hstack(values['Precision'][:]), 1)
-        values['Recall'] = np.mean(np.hstack(values['Recall'][:]), 1)
-        f_measures = (1 + beta ** 2) * values['Precision'] * values['Recall'] / (
-                beta ** 2 * values['Precision'] + values['Recall'])
-        values['Fmeasure_all_thresholds'] = f_measures
-        values['Max-F'] = np.max(f_measures)
-
-    if save:
-        if not os.path.isdir(save):
-            os.mkdir(save)
-        for key in values.keys():
-            np.save(os.path.join(save, key + ".npy"), values[key])
-
-    return values
-
-
-def read_and_normalize(gt_path, sm_path, gt_threshold=0.5):
-    """
-    function that reads, normalizes and crops a ground truth and a saliency map
-
-    parameters
-    ----------
-    gt_path : str
-        The path to a ground truth map
-    sm_path : str
-        The path to a predicted saliency map
-    gt_threshold : float
-        The threshold that is used to binrize ground truth maps.
-
-    Returns
-    -------
-    gt_img, sm_img : numpy.ndarray
-        The prepared arrays
-    """
-    gt_img = norm_img(cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE))
-    gt_img = (gt_img >= gt_threshold).astype(np.float32)
-    sm_img = norm_img(cv2.imread(sm_path, cv2.IMREAD_GRAYSCALE))
-    if sm_img.shape[0] != gt_img.shape[0] or sm_img.shape[1] != gt_img.shape[1]:
-        sm_img = cv2.resize(sm_img, (gt_img.shape[1], gt_img.shape[0]))
-
-    return gt_img, sm_img
-
-
-def normalize(gt_img, sm_img, gt_threshold=0.5):
-    """
-    function that reads, normalizes and crops a ground truth and a saliency map
-
-    parameters
-    ----------
-    gt_path : str
-        The path to a ground truth map
-    sm_path : str
-        The path to a predicted saliency map
-    gt_threshold : float
-        The threshold that is used to binrize ground truth maps.
-
-    Returns
-    -------
-    gt_img, sm_img : numpy.ndarray
-        The prepared arrays
-    """
-    gt_img = norm_img(gt_img)
-    gt_img = (gt_img >= gt_threshold).astype(np.float32)
-    sm_img = norm_img(sm_img)
-    if sm_img.shape[0] != gt_img.shape[0] or sm_img.shape[1] != gt_img.shape[1]:
-        sm_img = cv2.resize(sm_img, (gt_img.shape[1], gt_img.shape[0]))
-
-    return gt_img, sm_img
-
-
-
-def norm_img(im):
-    return cv2.normalize(im.astype('float'),
-                         None,
-                         0.0, 1.0,
-                         cv2.NORM_MINMAX)
-
-
-# MAE
-def mean_square_error(gt, sm):
-    return np.mean(np.abs(sm - gt))
-
-
-# E-measure
-# article: https://arxiv.org/abs/1805.10421
-# original code [Matlab]: https://github.com/DengPingFan/E-measure
-def e_measure(gt, sm):
-    """
-    This fucntion computes the Enhanced-alignment Measure (E-Measure) between the saliency map and the ground truth
-    article: https://arxiv.org/abs/1805.10421
-    original code [Matlab]: https://github.com/DengPingFan/E-measure
-
-    parameters
-    ----------
-    gt : numpy.ndarray
-        The path to the ground truth directory
-    sm : numpy.ndarray
-        The path to the predicted saliency map directory
-
-    Returns
-    -------
-    value : float
-        The calculated E-masure
-    """
-    sm = adptive_binary(sm)
-
-    gt = gt.astype(np.bool_) # np.bool is depreciated
-    sm = sm.astype(np.bool_)
-
-    dgt = gt.astype(np.float32)
-    dsm = sm.astype(np.float32)
-
-    if np.sum(dgt) == 0:  # if the gt is completely black
-        enhanced_matrix = 1.0 - dsm  # only calculate the black area of intersection
-    elif np.mean(dgt) == 1:  # if the gt is completely white
-        enhanced_matrix = dsm  # only calcualte the white area of intersection
+    if nb_objects is None:
+        objects_ids = np.unique(y_true[(y_true < 255) & (y_true > 0)])
+        nb_objects = len(objects_ids)
     else:
-        # Normal case:
-        # 1.compute alignment matrix
-        align_matrix = alignment_term(dsm, dgt)
-        # 2.compute enhanced alignment matrix
-        enhanced_matrix = enhanced_alignment_term(align_matrix)
+        objects_ids = [i + 1 for i in range(nb_objects)]
+        objects_ids = np.asarray(objects_ids, dtype=np.int)
+    if nb_objects == 0:
+        raise ValueError('Number of objects in y_true should be higher than 0.')
+    nb_frames = len(y_true)
 
-    height, width = gt.shape
-    value = np.sum(enhanced_matrix) / (height * width - 1 + eps)
-    return value
+    jaccard = np.empty((nb_frames, nb_objects), dtype=np.float)
 
+    for i, obj_id in enumerate(objects_ids):
+        mask_true, mask_pred = y_true == obj_id, y_pred == obj_id
 
-def alignment_term(dgt, dsm):
-    # compute global mean
-    mu_fm = np.mean(dsm)
-    mu_gt = np.mean(dgt)
+        union = (mask_true | mask_pred).sum(axis=(1, 2))
+        intersection = (mask_true & mask_pred).sum(axis=(1, 2))
 
-    # compute the bias matrix
-    align_fm = dsm - mu_fm
-    align_gt = dgt - mu_gt
+        for j in range(nb_frames):
+            if np.isclose(union[j], 0):
+                jaccard[j, i] = 1.
+            else:
+                jaccard[j, i] = intersection[j] / union[j]
 
-    # compute alignment matrix
-    align_Matrix = 2 * (align_gt * align_fm) / (align_gt * align_gt + align_fm * align_fm + eps)
-    return align_Matrix
-
-
-def enhanced_alignment_term(align_matrix):
-    enhanced = ((align_matrix + 1) ** 2) / 4
-    return enhanced
+    if average_over_objects:
+        jaccard = jaccard.mean(axis=1)
+    return jaccard
 
 
-def adptive_binary(sm):
-    adaptive_threshold = 2 * np.mean(sm)
-
-    if adaptive_threshold > 1:
-        adaptive_threshold = 1
-
-    binary_sm = (sm >= adaptive_threshold).astype(np.float32)
-
-    return binary_sm
-
-
-# S-Measure
-# article: https://www.crcv.ucf.edu/papers/iccv17/1164.pdf
-# Matlab code: https://github.com/DengPingFan/S-measure
-def s_measure(gt, sm):
+def _seg2bmap(seg, width=None, height=None):
     """
-    This fucntion computes the structural similarity (S-Measure) between the saliency map and the ground truth
-    article: https://www.crcv.ucf.edu/papers/iccv17/1164.pdf
-    original code [Matlab]: https://github.com/DengPingFan/S-measure
+    From a segmentation, compute a binary boundary map with 1 pixel wide
+    boundaries. The boundary pixels are offset by 1/2 pixel towards the
+    origin from the actual segment boundary.
 
-    parameters
-    ----------
-    gt : numpy.ndarray
-        The path to the ground truth directory
-    sm : numpy.ndarray
-        The path to the predicted saliency map directory
+    # Arguments
+        seg: Segments labeled from 1..k.
+        width:	Width of desired bmap  <= seg.shape[1]
+        height:	Height of desired bmap <= seg.shape[0]
 
-    Returns
-    -------
-    value : float
-        The calculated S-masure
+    # Returns
+        bmap (ndarray):	Binary boundary map.
+
+    David Martin <dmartin@eecs.berkeley.edu>
+    January 2003
     """
-    gt_mean = np.mean(gt)
 
-    if gt_mean == 0:  # if the GT is completely black
-        sm_mean = np.mean(sm)
-        measure = 1.0 - sm_mean  # only calculate the area of intersection
-    elif gt_mean == 1:  # if the GT is completely white
-        sm_mean = np.mean(sm)
-        measure = sm_mean.copy()  # only calcualte the area of intersection
+    seg = seg.astype(np.bool)
+    seg[seg > 0] = 1
+
+    assert np.atleast_3d(seg).shape[2] == 1
+
+    width = seg.shape[1] if width is None else width
+    height = seg.shape[0] if height is None else height
+
+    h, w = seg.shape[:2]
+
+    ar1 = float(width) / float(height)
+    ar2 = float(w) / float(h)
+
+    assert not (width > w | height > h | abs(ar1 - ar2) >
+                0.01), "Can't convert %dx%d seg to %dx%d bmap." % (w, h, width,
+                                                                   height)
+
+    e = np.zeros_like(seg)
+    s = np.zeros_like(seg)
+    se = np.zeros_like(seg)
+
+    e[:, :-1] = seg[:, 1:]
+    s[:-1, :] = seg[1:, :]
+    se[:-1, :-1] = seg[1:, 1:]
+
+    b = seg ^ e | seg ^ s | seg ^ se
+    b[-1, :] = seg[-1, :] ^ e[-1, :]
+    b[:, -1] = seg[:, -1] ^ s[:, -1]
+    b[-1, -1] = 0
+
+    if w == width and h == height:
+        bmap = b
     else:
-        alpha = 0.5
-        measure = alpha * s_object(sm, gt) + (1 - alpha) * s_region(sm, gt)
-        if measure < 0:
-            measure = 0
+        bmap = np.zeros((height, width))
+        for x in range(w):
+            for y in range(h):
+                if b[y, x]:
+                    j = 1 + math.floor((y - 1) + height / h)
+                    i = 1 + math.floor((x - 1) + width / h)
+                    bmap[j, i] = 1
 
-    return measure
+    return bmap
 
 
-def ssim(gt, sm):
-    gt = gt.astype(np.float32)
+def f_measure(true_mask, pred_mask, bound_th=0.008):
+    """F-measure for two 2D masks.
 
-    height, width = sm.shape
-    num_pixels = width * height
+    # Arguments
+        true_mask: Numpy Array, Binary array of shape (H x W) representing the
+            ground truth mask.
+        pred_mask: Numpy Array. Binary array of shape (H x W) representing the
+            predicted mask.
+        bound_th: Float. Optional parameter to compute the F-measure. Default is
+            0.008.
 
-    # Compute the mean of SM,GT
-    sm_mean = np.mean(sm)
-    gt_mean = np.mean(gt)
+    # Returns
+        float: F-measure.
+    """
+    true_mask = np.asarray(true_mask, dtype=np.bool)
+    pred_mask = np.asarray(pred_mask, dtype=np.bool)
 
-    # Compute the variance of SM,GT
-    sigma_x2 = np.sum(np.sum((sm - sm_mean) ** 2)) / (num_pixels - 1 + eps)
-    sigma_y2 = np.sum(np.sum((gt - gt_mean) ** 2)) / (num_pixels - 1 + eps)
+    assert true_mask.shape == pred_mask.shape
 
-    # Compute the covariance
-    sigma_xy = np.sum(np.sum((sm - sm_mean) * (gt - gt_mean))) / (num_pixels - 1 + eps)
+    bound_pix = bound_th if bound_th >= 1 else (np.ceil(
+        bound_th * np.linalg.norm(true_mask.shape)))
 
-    alpha = 4 * sm_mean * gt_mean * sigma_xy
-    beta = (sm_mean ** 2 + gt_mean ** 2) * (sigma_x2 + sigma_y2)
+    fg_boundary = _seg2bmap(pred_mask)
+    gt_boundary = _seg2bmap(true_mask)
 
-    if alpha != 0:
-        ssim_value = alpha / (beta + eps)
-    elif alpha == 0 and beta == 0:
-        ssim_value = 1.0
+    fg_dil = cv2.dilate(
+        fg_boundary.astype(np.uint8),
+        disk(bound_pix).astype(np.uint8))
+    gt_dil = cv2.dilate(
+        gt_boundary.astype(np.uint8),
+        disk(bound_pix).astype(np.uint8))
+
+    # Get the intersection
+    gt_match = gt_boundary * fg_dil
+    fg_match = fg_boundary * gt_dil
+
+    # Area of the intersection
+    n_fg = np.sum(fg_boundary)
+    n_gt = np.sum(gt_boundary)
+
+    # Compute precision and recall
+    if n_fg == 0 and n_gt > 0:
+        precision = 1
+        recall = 0
+    elif n_fg > 0 and n_gt == 0:
+        precision = 0
+        recall = 1
+    elif n_fg == 0 and n_gt == 0:
+        precision = 1
+        recall = 1
     else:
-        ssim_value = 0
+        precision = np.sum(fg_match) / float(n_fg)
+        recall = np.sum(gt_match) / float(n_gt)
 
-    return ssim_value
-
-
-def divide_sm(sm, x, y):
-    # copy the 4 regions
-    lt = sm[:y, :x]
-    rt = sm[:y, x:]
-    lb = sm[y:, :x]
-    rb = sm[y:, x:]
-
-    return lt, rt, lb, rb
-
-
-def divide_gt(gt, x, y):
-    height, width = gt.shape
-    area = width * height
-
-    # copy the 4 regions
-    lt = gt[:y, :x]
-    rt = gt[:y, x:]
-    lb = gt[y:, :x]
-    rb = gt[y:, x:]
-
-    # The different weight (each block proportional to the GT foreground region).
-    w1 = (x * y) / area
-    w2 = ((width - x) * y) / area
-    w3 = (x * (height - y)) / area
-    w4 = 1.0 - w1 - w2 - w3
-
-    return lt, rt, lb, rb, w1, w2, w3, w4
-
-
-def centroid(gt):
-    # col
-    rows, cols = gt.shape
-
-    if np.sum(gt) == 0:
-        x = np.round(cols / 2)
-        y = np.round(rows / 2)
+    # Compute F measure
+    if precision + recall == 0:
+        F = 0
     else:
-        total = np.sum(gt)
-        i = np.arange(cols).reshape(1, cols) + 1
-        j = np.arange(rows).reshape(rows, 1) + 1
+        F = 2 * precision * recall / (precision + recall)
 
-        x = int(np.round(np.sum(np.sum(gt, 0, keepdims=True) * i) / total))
-        y = int(np.round(np.sum(np.sum(gt, 1, keepdims=True) * j) / total))
-
-    return x, y
+    return F
 
 
-def s_region(gt, sm):
-    x, y = centroid(gt)
-    gt_1, gt_2, gt_3, gt_4, w1, w2, w3, w4 = divide_gt(gt, x, y)
+def batched_f_measure(y_true,
+                      y_pred,
+                      average_over_objects=True,
+                      nb_objects=None,
+                      bound_th=0.008):
+    """ Batch F-measure for multiple instance segmentation.
 
-    sm_1, sm_2, sm_3, sm_4 = divide_sm(sm, x, y)
+    # Arguments
+        y_true: Numpy Array. Array of shape (B x H x W) and type integer giving
+            the ground truth of the object instance segmentation.
+        y_pred: Numpy Array. Array of shape (B x H x W) and type integer giving
+            the
+            prediction of the object segmentation.
+        average_over_objects: Boolean. Weather or not to average the F-measure
+            over all the objects in the sequence. Default True.
+        nb_objects: Integer. Number of objects in the ground truth mask. If
+            `None` the value will be infered from `y_true`. Setting this value
+            will speed up the computation.
 
-    q1 = ssim(sm_1, gt_1)
-    q2 = ssim(sm_2, gt_2)
-    q3 = ssim(sm_3, gt_3)
-    q4 = ssim(sm_4, gt_4)
-
-    region_value = w1 * q1 + w2 * q2 + w3 * q3 + w4 * q4
-
-    return region_value
-
-
-def object(gt, sm):
-    x = np.mean(sm[gt == 1])
-    # compute the standard deviations of the foreground or background in sm
-    sigma_x = np.std(sm[gt == 1])
-    score = 2.0 * x / (x ** 2 + 1.0 + sigma_x + eps)
-    return score
-
-
-def s_object(gt, sm):
-    # compute the similarity of the foreground in the object level
-
-    sm_fg = sm.copy()
-    sm_fg[gt == 0] = 0
-    o_fg = object(sm_fg, gt)
-
-    # compute the similarity of the background
-    sm_bg = 1.0 - sm.copy()
-    sm_bg[gt == 1] = 0
-    o_bg = object(sm_bg, gt == 0)
-
-    u = np.mean(gt)
-    object_value = u * o_fg + (1 - u) * o_bg
-    return object_value
-
-
-
-# Weighted F-Measure
-# article: https://ieeexplore.ieee.org/document/6909433
-# Matlab code: https://cgm.technion.ac.il/Computer-Graphics-Multimedia/Software/FGEval/
-def weighted_fmeasure(gt, sm, beta2=1):
+    # Returns
+        ndarray: Returns an array of shape (B) with the average F-measure for
+            all instances at each frame if `average_over_objects=True`. If
+            `average_over_objects=False` returns an array of shape (B x nObj)
+            with nObj being the number of objects on `y_true`.
     """
-    This fucntion computes Weighted F-Measure between the saliency map and the ground truth
-    article: https://ieeexplore.ieee.org/document/6909433
-    original code [Matlab]: https://cgm.technion.ac.il/Computer-Graphics-Multimedia/Software/FGEval/
+    y_true = np.asarray(y_true, dtype=np.int)
+    y_pred = np.asarray(y_pred, dtype=np.int)
+    if y_true.ndim != 3:
+        raise ValueError('y_true array must have 3 dimensions.')
+    if y_pred.ndim != 3:
+        raise ValueError('y_pred array must have 3 dimensions.')
+    if y_true.shape != y_pred.shape:
+        raise ValueError('y_true and y_pred must have the same shape. {} != {}'.format(y_true.shape, y_pred.shape))
 
-    parameters
-    ----------
-    gt : numpy.ndarray
-        The path to the ground truth directory
-    sm : numpy.ndarray
-        The path to the predicted saliency map directory
-
-    Returns
-    -------
-    value : float
-        The calculated Weighted F-Measure
-    """
-    dst, idx = distance_transform_edt(1 - gt, return_indices=True)
-
-    raw_idx = idx[0][gt == 0]
-    col_idx = idx[1][gt == 0]
-
-    e = np.abs(sm - gt).astype(np.float32)
-    et = np.abs(sm - gt).astype(np.float32)
-
-    et[gt == 0] = et[raw_idx, col_idx]
-
-    k = matlab_style_gauss2d(shape=(7, 7), sigma=5)
-
-    ea = correlate(et.astype(np.float32), k, mode='constant')
-    min_e_ea = np.abs(sm - gt).astype(np.float32)
-
-    min_e_ea[gt * (ea < e) == 1] = ea[gt * (ea < e) == 1]
-
-    b = np.ones_like(gt).astype(np.float32)
-    b[gt == 0] = 2 - 1 * np.exp(np.log(1 - 0.5) / 5. * dst[gt == 0])
-
-    ew = min_e_ea * b
-    tpw = np.sum(gt) - np.sum(ew[gt == 1])
-    fpw = np.sum(ew[gt == 0])
-
-    rec = 1 - np.mean(ew[gt == 1])  # Weighed Recall
-    prec = tpw / (eps + tpw + fpw)  # Weighted Precision
-
-    value = (1 + beta2) * (rec * prec) / (eps + (beta2 * rec) + prec)
-    return value
-
-def matlab_style_gauss2d(shape=(3, 3), sigma=0.5):
-    """
-    2D gaussian mask - should give the same result as MATLAB's
-    fspecial('gaussian',[shape],[sigma])
-    """
-    m, n = [(ss - 1.) / 2. for ss in shape]
-    y, x = np.ogrid[-m:m + 1, -n:n + 1]
-    h = np.exp(-(x * x + y * y) / (2. * sigma * sigma))
-    h[h < np.finfo(h.dtype).eps * h.max()] = 0
-    sumh = h.sum()
-    if sumh != 0:
-        h /= sumh
-    return h
-
-
-
-# Adaptive F-measure
-
-def adaptive_fmeasure(gt, sm, beta):
-    """
-    This fucntion computes Adaptive F-measure between the saliency map and the ground truth using
-    the binary method proposed in:
-    https://ieeexplore.ieee.org/document/5206596
-
-    parameters
-    ----------
-    gt : numpy.ndarray
-        The path to the ground truth directory
-    sm : numpy.ndarray
-        The path to the predicted saliency map directory
-
-    Returns
-    -------
-    value : float
-        The calculated Adaptive F-measure
-    """
-    gt_idx = np.where(gt > 0)
-    gt_cnt = np.sum(gt)
-
-    if gt_cnt == 0:
-        prec = []
-        recall = []
+    if nb_objects is None:
+        objects_ids = np.unique(y_true[(y_true < 255) & (y_true > 0)])
+        nb_objects = len(objects_ids)
     else:
-        adaptive_threshold = 2 * np.mean(sm)
-        if adaptive_threshold > 1:
-            adaptive_threshold = 1
-        sm_binary = (sm >= adaptive_threshold).astype(np.float32)
-        hit_cnt = np.sum(sm_binary[gt_idx])
-        alg_cnt = np.sum(sm_binary)
+        objects_ids = [i + 1 for i in range(nb_objects)]
+        objects_ids = np.asarray(objects_ids, dtype=np.int)
+    if nb_objects == 0:
+        raise ValueError('Number of objects in y_true should be higher than 0.')
+    nb_frames = len(y_true)
 
-        if hit_cnt == 0:
-            prec = 0
-            recall = 0
-        else:
-            prec = hit_cnt / (alg_cnt + eps)
-            recall = hit_cnt / gt_cnt
-    value = (1 + beta ** 2) * prec * recall / ((beta ** 2 * prec + recall) + eps)
-    return value
+    f_measure_result = np.empty((nb_frames, nb_objects), dtype=np.float)
 
+    for i, obj_id in enumerate(objects_ids):
+        for frame_id in range(nb_frames):
+            gt_mask = y_true[frame_id, :, :] == obj_id
+            pred_mask = y_pred[frame_id, :, :] == obj_id
+            f_measure_result[frame_id, i] = f_measure(
+                gt_mask, pred_mask, bound_th=bound_th)
 
-
-def prec_recall(gt, sm, num_th):
-    """
-    This fucntion computes Adaptive F-measure between the saliency map and the ground truth using
-    the binary method proposed in:
-    https://ieeexplore.ieee.org/document/5206596
-    The results of this dunction will be used to calculate Max-F measure and plot PR and F-Threshold Curves
-    parameters
-    ----------
-    gt : numpy.ndarray
-        The path to the ground truth directory
-    sm : numpy.ndarray
-        The path to the predicted saliency map directory
-    num_th : interger
-        The total number of thresholds between 0 and 1
-    Returns
-    -------
-    prec, recall:  numpy.ndarray
-        The calculated Precision and Recall (shape: (num_th,1))
-    """
-    gt_idx = np.where(gt > 0)
-    gt_cnt = np.sum(gt)
-
-    if gt_cnt == 0:
-        prec = []
-        recall = []
-    else:
-        hit_cnt = np.zeros((num_th, 1), np.float32)
-        alg_cnt = np.zeros((num_th, 1), np.float32)
-        thresholds = np.linspace(0, 1, num_th)
-        for k, curTh in enumerate(thresholds):
-            sm_binary = (sm >= curTh).astype(np.float32)
-            hit_cnt[k] = np.sum(sm_binary[gt_idx])
-            alg_cnt[k] = np.sum(sm_binary)
-
-        prec = hit_cnt / (alg_cnt + eps)
-        recall = hit_cnt / gt_cnt
-
-    return prec, recall
+    if average_over_objects:
+        f_measure_result = f_measure_result.mean(axis=1)
+    return f_measure_result
