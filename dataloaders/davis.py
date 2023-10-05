@@ -12,8 +12,8 @@ from PIL import Image
 import numpy as np
 from torchvision.transforms.functional import resize, pil_to_tensor
 from segment_anything.utils.transforms import ResizeLongestSide
-from range_transform import im_normalization, im_mean
-from reseed import reseed
+from .range_transform import im_normalization, im_mean
+from .reseed import reseed
 
 class VOSDataset(Dataset):
     """
@@ -70,11 +70,11 @@ class VOSDataset(Dataset):
 
         self.all_im_dual_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop((1080, 1920))
+            transforms.RandomResizedCrop((1080, 1920), scale=(0.7,1.00), ratio=(1920/1080,1920/1080), interpolation=InterpolationMode.NEAREST)
         ])
         self.all_gt_dual_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop((1080, 1920))
+            transforms.RandomResizedCrop((1080, 1920), scale=(0.7,1.00), ratio=(1920/1080,1920/1080), interpolation=InterpolationMode.NEAREST)
         ])
 
         # Final transform without randomness

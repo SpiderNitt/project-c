@@ -109,13 +109,13 @@ class Sam(nn.Module):
         '''
         # We disable grad since we are not updating the image encoder weights
         with torch.no_grad():
-            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(batched_input), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
+            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(batched_input["selector"]), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
         torch.cuda.empty_cache()
         
         prev_masks = batched_input["prev_masks"] # (B, [F-1]=2, P=3, 256, 256)
         prev_masks = prev_masks.reshape(-1, 1, *prev_masks.shape[-2:])
         _, mask_embeddings= self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
-        mask_embeddings = mask_embeddings.reshape(len(batched_input), self.num_frames - 1, self.max_num_obj, 256, 64, 64) # (B, [F-1]=2, P=3, 256, 64, 64)
+        mask_embeddings = mask_embeddings.reshape(len(batched_input["selector"]), self.num_frames - 1, self.max_num_obj, 256, 64, 64) # (B, [F-1]=2, P=3, 256, 64, 64)
         
         # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
         embeddings = {"image_embeddings": image_embeddings, "mask_embeddings": mask_embeddings}
@@ -140,7 +140,7 @@ class Sam(nn.Module):
             masks = self.postprocess_masks(
                 low_res_masks,
                 input_size=batched_input["image"].shape[-2:],
-                original_size=batched_input["original_size"].shape[-2:],
+                original_size=batched_input["original_size"][-2:],
             )
             
             outputs.append(

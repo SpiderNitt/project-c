@@ -14,15 +14,14 @@ import os
 
 # DAVIS
 config = {
-    "precision": "16-mixed",
+    "precision": "32",
     "num_devices": 1,
     "num_epochs": 50,
-    "metric_train_eval_interval": 20,
-    "log_every_n_steps": 1,
+    "metric_train_eval_interval": 250,
     "img_size": 1024,
     "out_dir": "/",
     "opt": {
-        "learning_rate": 8e-4,
+        "learning_rate": 3e-4,
         "weight_decay": 1e-4,
         "decay_factor": 10,
         "steps": [60000, 86666],
@@ -30,7 +29,7 @@ config = {
     },
     "model": {
         "type": "vit_b",
-        "checkpoint": None,
+        "checkpoint": "sam_vit_b_01ec64.pth",
         "freeze": {
             "image_encoder": True,
             "prompt_encoder": True,
@@ -43,7 +42,7 @@ config = {
         "max_num_obj": 3,
         "num_frames": 3,
         "max_jump": 5,
-        "num_workers": 0,
+        "num_workers": 4,
         "pin_memory": True,
     },
 }
@@ -53,7 +52,7 @@ cfg = OmegaConf.create(config)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = sam_model_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
 model = CamoSam(cfg, model)
-model = torch.compile(model, mode="reduce-overhead")
+# model = torch.compile(model, mode="reduce-overhead")
 
 train_dataloader, validation_dataloader = get_loader(cfg.dataset)
 
@@ -70,7 +69,8 @@ trainer = L.Trainer(
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
     strategy="ddp",
-    log_every_n_steps=cfg.log_every_n_steps,
+    # log_every_n_steps=cfg.log_every_n_steps,
+    check_val_every_n_epoch=20,
 )
 
 trainer.fit(model, train_dataloader, validation_dataloader)
