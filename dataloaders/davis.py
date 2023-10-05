@@ -10,10 +10,10 @@ from torch.nn import functional as F
 
 from PIL import Image
 import numpy as np
-from torchvision.transforms.functional import resize
+from torchvision.transforms.functional import resize, pil_to_tensor
 from segment_anything.utils.transforms import ResizeLongestSide
-from .range_transform import im_normalization, im_mean
-from .reseed import reseed
+from range_transform import im_normalization, im_mean
+from reseed import reseed
 
 class VOSDataset(Dataset):
     """
@@ -35,7 +35,6 @@ class VOSDataset(Dataset):
         self.videos = []
         self.frames = {}
 
-        vid_list = sorted(os.listdir(self.im_root))
         # Pre-filtering
         for vid in vid_list:
             if subset is not None:
@@ -71,11 +70,11 @@ class VOSDataset(Dataset):
 
         self.all_im_dual_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
-            transforms.Resize((1080, 1920), interpolation=InterpolationMode.NEAREST)
+            transforms.RandomCrop((1080, 1920))
         ])
         self.all_gt_dual_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
-            transforms.Resize((1080, 1920), interpolation=InterpolationMode.NEAREST)
+            transforms.RandomCrop((1080, 1920))
         ])
 
         # Final transform without randomness
@@ -149,6 +148,7 @@ class VOSDataset(Dataset):
                 reseed(pairwise_seed)
                 this_gt = self.pair_gt_dual_transform(this_gt)
 
+                cropped_img = pil_to_tensor(this_im)
                 this_im = torch.as_tensor(self.resize_longest.apply_image(np.array(this_im, dtype=np.uint8))).permute(2, 0, 1)
                 this_gt = np.array(this_gt)
 
@@ -192,7 +192,7 @@ class VOSDataset(Dataset):
         for t in range(len(prev_frame_gt)):
             new_prev_frame_gt.append(torch.as_tensor(self.resize_longest.apply_image(prev_frame_gt[t].astype(dtype=np.uint8))))
         new_prev_frame_gt = torch.stack(new_prev_frame_gt, 0).reshape(-1, self.max_num_obj, *new_prev_frame_gt[0].shape[-2:])
-        new_prev_frame_gt = self.preprocess_prev_masks(new_prev_frame_gt)
+        new_prev_frame_gt = self.preprocess_prev_masks(new_prev_frame_gt).float()
 
         all_frame_gt = torch.as_tensor(all_frame_gt).float()
 
@@ -203,20 +203,17 @@ class VOSDataset(Dataset):
         # (H', W') -> after LongestSideResize
         data = {
             'image': images, # (num_frames=3, 3, H', W') 
-            'gt_mask': all_frame_gt[-1], # (num_obj=3, H, W)
+            'gt_mask': all_frame_gt[-1], # (num_obj=3, 1080, 1920)
             'prev_masks': new_prev_frame_gt, # (num_frames=2, num_obj=3, 256, 256)
             'selector': selector, # (num_obj=3) Indicates if ith object exists
-            'info': info,
+            'cropped_img': cropped_img, # (3, 1080, 1920)
             'original_size': all_frame_gt.shape[-2:]
         }
 
         return data
 
     def __len__(self):
-        return len(self.videos)
-   
-def collate_fn(batch):
-    return batch    
+        return len(self.videos)   
 
 def get_loader(cfg):    
     with open(cfg.root_dir+'ImageSets/2017/train.txt', 'r') as file:
@@ -235,7 +232,6 @@ def get_loader(cfg):
         shuffle=True,
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
-        collate_fn=collate_fn,
     )
     
     with open(cfg.root_dir+'ImageSets/2017/val.txt', 'r') as file:
@@ -254,7 +250,6 @@ def get_loader(cfg):
         shuffle=False,
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
-        collate_fn=collate_fn,
     )
 
     return train_data_loader, val_data_loader

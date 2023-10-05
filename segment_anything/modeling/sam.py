@@ -97,9 +97,7 @@ class Sam(nn.Module):
             shape PxCxHxW, where H=W=256. Can be passed as mask input
             to subsequent iterations of prediction.   
         """
-        input_images = torch.stack(
-            [self.preprocess(x["image"]) for x in batched_input], dim=0
-        )  # Output -> (B, num_frames=3, 3, 1024, 1024)
+        input_images = self.preprocess(batched_input["image"])# Output -> (B, num_frames=3, 3, 1024, 1024)
         
         '''
         To disbale grad for previous frames alone
@@ -114,7 +112,7 @@ class Sam(nn.Module):
             image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(batched_input), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
         torch.cuda.empty_cache()
         
-        prev_masks = torch.stack([x["prev_masks"] for x in batched_input], dim=0) # (B, [F-1]=2, P=3, 256, 256)
+        prev_masks = batched_input["prev_masks"] # (B, [F-1]=2, P=3, 256, 256)
         prev_masks = prev_masks.reshape(-1, 1, *prev_masks.shape[-2:])
         _, mask_embeddings= self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
         mask_embeddings = mask_embeddings.reshape(len(batched_input), self.num_frames - 1, self.max_num_obj, 256, 64, 64) # (B, [F-1]=2, P=3, 256, 64, 64)
@@ -123,18 +121,14 @@ class Sam(nn.Module):
         embeddings = {"image_embeddings": image_embeddings, "mask_embeddings": mask_embeddings}
         
         all_sparse_embeddings, all_dense_embeddings = self.propagation_module(
-            embeddings, self.cfg
+            embeddings
         )  # (B, P=3, 64, 64, 256)
         all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (B, P=3, 256, 64, 64)
 
         outputs = []
-        for image_record, curr_embedding, prop_sparse_embeddings, prop_dense_embeddings in zip(batched_input, image_embeddings[:, -1], all_sparse_embeddings, all_dense_embeddings):
+        for curr_embedding, prop_sparse_embeddings, prop_dense_embeddings in zip(image_embeddings[:, -1], all_sparse_embeddings, all_dense_embeddings):
             # curr_embedding: (256, 64, 64)
             # prop_dense_embeddings: (3, 256, 64, 64) -> basically we have 3 prompts
-            if "point_coords" in image_record:
-                points = (image_record["point_coords"], image_record["point_labels"])
-            else:
-                points = None
             
             low_res_masks, iou_predictions = self.mask_decoder(
                 image_embeddings=curr_embedding.unsqueeze(0),
@@ -145,8 +139,8 @@ class Sam(nn.Module):
             )
             masks = self.postprocess_masks(
                 low_res_masks,
-                input_size=image_record["image"].shape[-2:],
-                original_size=image_record["original_size"],
+                input_size=batched_input["image"].shape[-2:],
+                original_size=batched_input["original_size"].shape[-2:],
             )
             
             outputs.append(
