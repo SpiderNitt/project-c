@@ -236,10 +236,10 @@ class CamoSam(L.LightningModule):
 
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
             
-            loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid, reduction="sum")
+            loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid, reduction="mean")
             loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)
             loss_iou += F.mse_loss(
-                each_output["iou_predictions"][selector].reshape(-1), self.iou(pred_masks_sigmoid, gt_mask), reduction="sum"
+                each_output["iou_predictions"][selector].reshape(-1), self.iou(pred_masks_sigmoid, gt_mask), reduction="mean"
             )
 
         # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
