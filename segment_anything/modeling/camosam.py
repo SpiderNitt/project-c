@@ -144,7 +144,7 @@ class CamoSam(L.LightningModule):
         numerator = (inputs * targets).sum(-1, keepdim=True)
         denominator = inputs.sum(-1, keepdim=True) + targets.sum(-1, keepdim=True) - numerator
         loss = 1 - (numerator + 1) / (denominator + 1)
-        return loss.sum()
+        return loss.mean()
     
     def iou(self, inputs, targets):
         """
@@ -164,7 +164,7 @@ class CamoSam(L.LightningModule):
         numerator = (inputs * targets).sum(-1, keepdim=True)
         denominator = inputs.sum(-1, keepdim=True) + targets.sum(-1, keepdim=True) - numerator
         iou = (numerator + 1) / (denominator + 1)
-        return iou.sum(dim=1)
+        return iou.mean(dim=1)
 
     def lr_lambda(self, step):
         if step < self.cfg.opt.warmup_steps:
@@ -204,10 +204,10 @@ class CamoSam(L.LightningModule):
 
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
             
-            loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid, reduction="sum")
+            loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid, reduction="mean")
             loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)
             loss_iou += F.mse_loss(
-                each_output["iou_predictions"][selector].reshape(-1), self.iou(pred_masks_sigmoid, gt_mask), reduction="sum"
+                each_output["iou_predictions"][selector].reshape(-1), self.iou(pred_masks_sigmoid, gt_mask), reduction="mean"
             )
 
         # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
@@ -216,7 +216,7 @@ class CamoSam(L.LightningModule):
         avg_dice = loss_dice / bs
         avg_iou = loss_iou / bs
 
-        self.log_dict({"Loss/val_total_loss" : loss_total, "Loss/val_focal_loss" : avg_focal, "Loss/val_dice_loss" : avg_dice, "Loss/val_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log_dict({"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {'loss': loss_total, 'masks': pred_masks_list}
     
@@ -268,13 +268,13 @@ class CamoSam(L.LightningModule):
                 img = copped_img
                 img_list.append(img)
 
-            self.log_images(img_list, mask_list, gt_mask_list, batch_idx=batch_idx, train=True)
             mask_list = torch.stack(mask_list)
             gt_mask_list = torch.stack(gt_mask_list)
             self.train_jaccard(mask_list, gt_mask_list)
             self.train_dice(mask_list, gt_mask_list)
             self.log('train_jaccard', self.train_jaccard, on_step=True, on_epoch=False)
             self.log('train_dice', self.train_dice, on_step=True, on_epoch=False)
+            self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=True)
 
     
     def on_validation_batch_end(self, output, batch, batch_idx):
@@ -292,10 +292,10 @@ class CamoSam(L.LightningModule):
             img = copped_img
             img_list.append(img)
 
-        self.log_images(img_list, mask_list, gt_mask_list, batch_idx=batch_idx, train=False)
         mask_list = torch.stack(mask_list)
         gt_mask_list = torch.stack(gt_mask_list)
-        self.val_jaccard(mask_list, gt_mask_list)
-        self.val_dice(mask_list, gt_mask_list)
-        self.log('val_jaccard', self.val_jaccard, on_step=True, on_epoch=False)
-        self.log('val_dice', self.val_dice, on_step=True, on_epoch=False)
+        self.train_jaccard(mask_list, gt_mask_list)
+        self.train_dice(mask_list, gt_mask_list)
+        self.log('train_jaccard', self.train_jaccard, on_step=True, on_epoch=False)
+        self.log('train_dice', self.train_dice, on_step=True, on_epoch=False)
+        self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=True)
