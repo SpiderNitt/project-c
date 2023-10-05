@@ -184,10 +184,10 @@ class MemoryEfficientSelfAttention(nn.Module):
         self.o_proj.bias.data.fill_(0)
     
     def forward(self, x):
-        batch_size = q.size(0)
-        num_objects = v.size(1)
+        batch_size = x.size(0)
+        num_objects = x.size(1)
 
-        qkv = self.q_proj(x) # (B, num_objects=3, 64, 64, [embed_dim=256]*3)
+        qkv = self.qkv_proj(x) # (B, num_objects=3, 64, 64, [embed_dim=256]*3)
 
         qkv = qkv.reshape(batch_size * num_objects, -1, self.num_heads, self.head_dim*3)
         qkv = qkv.permute(0, 2, 1, 3) # [Batch, Head, SeqLen, Dims]
