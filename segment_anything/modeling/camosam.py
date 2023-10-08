@@ -38,15 +38,26 @@ class CamoSam(L.LightningModule):
             param.requires_grad = False
         
         for param in self.model.propagation_module.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
+            
+        for p in self.model.propagation_module.sparse_embedding_conv[0].parameters():
+            p.requires_grad = True
     
         self.cfg = config
         self.batch_freq = self.cfg.metric_train_eval_interval
 
-        self.train_jaccard = torchmetrics.JaccardIndex(task="multiclass", num_classes=self.cfg.dataset.max_num_obj)
-        self.val_jaccard = torchmetrics.JaccardIndex(task="multiclass", num_classes=self.cfg.dataset.max_num_obj)
-        self.train_dice = torchmetrics.Dice(num_classes=self.cfg.dataset.max_num_obj)
-        self.val_dice = torchmetrics.Dice(num_classes=self.cfg.dataset.max_num_obj)
+        self.train_jaccard = torchmetrics.JaccardIndex(task="multiclass", num_classes=self.cfg.dataset.max_num_obj+1)
+        self.val_jaccard = torchmetrics.JaccardIndex(task="multiclass", num_classes=self.cfg.dataset.max_num_obj+1)
+        self.train_dice = torchmetrics.Dice(num_classes=self.cfg.dataset.max_num_obj+1)
+        self.val_dice = torchmetrics.Dice(num_classes=self.cfg.dataset.max_num_obj+1)
+        
+        self.train_jaccard_sep = torchmetrics.JaccardIndex(task="multiclass", num_classes=2)
+        self.val_jaccard_sep = torchmetrics.JaccardIndex(task="multiclass", num_classes=2)
+        self.train_dice_sep = torchmetrics.Dice(num_classes=2)
+        self.val_dice_sep = torchmetrics.Dice(num_classes=2)
+        
+        self.train_benchmark = []
+        self.val_benchmark = []
 
     def forward(
         self,
@@ -64,15 +75,15 @@ class CamoSam(L.LightningModule):
         table = wandb.Table(columns=['ID', 'Image'])
 
         for id, (img, gt, pred) in enumerate(zip(img_list, gt_list, mask_list)):
-            mask_img = wandb.Image(img, masks = {
+            mask_img = wandb.Image(img.float(), masks = {
                 "prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}
             })
             
             table.add_data(id, mask_img)
         if train:
-            wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Train" : table})
+            wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Train" : table})
         else:
-            wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Validation" : table})
+            wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Validation" : table})
 
     def sigmoid_focal_loss(
         self,
@@ -195,14 +206,26 @@ class CamoSam(L.LightningModule):
         loss_dice = 0
         loss_iou = 0
 
+        # output: 
+        # "masks": masks, # (P=3, 1, H, W)
+        # "iou_predictions": iou_predictions, # (P=3, 1)
+        # "low_res_logits": low_res_masks, # (P=3, 1, 256, 256)
+        
+        # batch:
+        # "gt_mask": gt_mask, # (B, P, H, W) P = 3
+        # "selector": selector, # (B, P) P = 3
+        # "cropped_img": cropped_img, # (B, 3, H, W)
+        
+
         pred_masks_list = []
-        for each_output, gt_mask, selector in zip(output, batch['gt_mask'], batch['selector']):
+        for each_output, gt_mask, selector in zip(output, batch['gt_mask'], batch['selector']): # selector = [True, True, False]
             pred_masks = each_output["masks"].squeeze()
-            pred_masks_list.append(pred_masks.detach())
+            # pred_masks_list.append(pred_masks.detach())
             pred_masks = pred_masks[selector] #[num_true_obj, H, W]
             gt_mask = gt_mask.squeeze()[selector] #[num_true_obj, H, W]
-
+                        
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
+            pred_masks_list.append(pred_masks_sigmoid.detach())
             
             loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid, reduction="mean")
             loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)
@@ -215,7 +238,8 @@ class CamoSam(L.LightningModule):
         avg_focal = loss_focal / bs
         avg_dice = loss_dice / bs
         avg_iou = loss_iou / bs
-
+        
+        self.train_benchmark.append(loss_total.item())
         self.log_dict({"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {'loss': loss_total, 'masks': pred_masks_list}
@@ -227,14 +251,26 @@ class CamoSam(L.LightningModule):
         loss_dice = 0
         loss_iou = 0
 
+        # output: 
+        # "masks": masks, # (P=3, 1, H, W)
+        # "iou_predictions": iou_predictions, # (P=3, 1)
+        # "low_res_logits": low_res_masks, # (P=3, 1, 256, 256)
+        
+        # batch:
+        # "gt_mask": gt_mask, # (B, P, H, W) P = 3
+        # "selector": selector, # (B, P) P = 3
+        # "cropped_img": cropped_img, # (B, 3, H, W)
+        
+
         pred_masks_list = []
-        for each_output, gt_mask, selector in zip(output, batch['gt_mask'], batch['selector']):
+        for each_output, gt_mask, selector in zip(output, batch['gt_mask'], batch['selector']): # selector = [True, True, False]
             pred_masks = each_output["masks"].squeeze()
-            pred_masks_list.append(pred_masks.detach())
+            # pred_masks_list.append(pred_masks.detach())
             pred_masks = pred_masks[selector] #[num_true_obj, H, W]
             gt_mask = gt_mask.squeeze()[selector] #[num_true_obj, H, W]
-
+                        
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
+            pred_masks_list.append(pred_masks_sigmoid.detach())
             
             loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid, reduction="mean")
             loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)
@@ -248,6 +284,7 @@ class CamoSam(L.LightningModule):
         avg_dice = loss_dice / bs
         avg_iou = loss_iou / bs
 
+        self.val_benchmark.append(loss_total.item())
         self.log_dict({"Loss/val_total_loss" : loss_total, "Loss/val_focal_loss" : avg_focal, "Loss/val_dice_loss" : avg_dice, "Loss/val_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {'loss': loss_total, 'masks': pred_masks_list}
@@ -256,13 +293,21 @@ class CamoSam(L.LightningModule):
         if self.check_frequency(batch_idx):
             img_list = []
             mask_list = []
+            sep_mask_list = []
             gt_mask_list = []
+            sep_gt_mask_list = []
 
-            for each_output, gt_mask, copped_img in zip(output["masks"], batch['gt_mask'], batch['cropped_img']):
-                pred_masks = torch.argmax(each_output, dim=0).detach() #[H, W]
-
-                gt_mask = torch.argmax(gt_mask, dim=0).squeeze().detach() #[H, W]
+            for each_output, gt_mask, copped_img, selector in zip(output["masks"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
+                gt_mask = gt_mask[selector]
+                sep_mask_list.append(each_output>0.5)
+                sep_gt_mask_list.append(gt_mask.type(torch.int8))
                 
+                max_, max_pos = torch.max(gt_mask, dim=0)
+                gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
+
+                max_, max_pos = torch.max(each_output, dim=0)
+                pred_masks = (max_pos+1) * (max_ > 0.5)
+             
                 mask_list.append(pred_masks)
                 gt_mask_list.append(gt_mask)
                 img = copped_img
@@ -270,32 +315,60 @@ class CamoSam(L.LightningModule):
 
             mask_list = torch.stack(mask_list)
             gt_mask_list = torch.stack(gt_mask_list)
+            
+            sep_mask_list = torch.stack(sep_mask_list)
+            sep_gt_mask_list = torch.stack(sep_gt_mask_list)
+            
             self.train_jaccard(mask_list, gt_mask_list)
             self.train_dice(mask_list, gt_mask_list)
-            self.log('train_jaccard', self.train_jaccard, on_step=True, on_epoch=False)
-            self.log('train_dice', self.train_dice, on_step=True, on_epoch=False)
+            self.log('train_jaccard_multi_obj', self.train_jaccard, on_step=True, on_epoch=False)
+            self.log('train_dice_multi_obj', self.train_dice, on_step=True, on_epoch=False)
+            
+            self.train_jaccard_sep(sep_mask_list, sep_gt_mask_list)
+            self.train_dice_sep(sep_mask_list, sep_gt_mask_list)
+            self.log('train_jaccard_single_obj', self.train_jaccard_sep, on_step=True, on_epoch=False)
+            self.log('train_dice_single_obj', self.train_dice_sep, on_step=True, on_epoch=False)
+            
             self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=True)
-
+   
     
     def on_validation_batch_end(self, output, batch, batch_idx):
         img_list = []
         mask_list = []
+        sep_mask_list = []
         gt_mask_list = []
-
-        for each_output, gt_mask, copped_img in zip(output["masks"], batch['gt_mask'], batch['cropped_img']):
-            pred_masks = torch.argmax(each_output, dim=0).detach() #[H, W]
-
-            gt_mask = torch.argmax(gt_mask, dim=0).squeeze().detach() #[H, W]
+        sep_gt_mask_list = []
+        for each_output, gt_mask, copped_img, selector in zip(output["masks"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
+            gt_mask = gt_mask[selector]
+            sep_mask_list.append(each_output>0.5)
+            sep_gt_mask_list.append(gt_mask.type(torch.int8))
             
+            max_, max_pos = torch.max(gt_mask, dim=0)
+            gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
+            max_, max_pos = torch.max(each_output, dim=0)
+            pred_masks = (max_pos+1) * (max_ > 0.5)
+         
             mask_list.append(pred_masks)
             gt_mask_list.append(gt_mask)
+            
             img = copped_img
             img_list.append(img)
-
         mask_list = torch.stack(mask_list)
         gt_mask_list = torch.stack(gt_mask_list)
-        self.train_jaccard(mask_list, gt_mask_list)
-        self.train_dice(mask_list, gt_mask_list)
-        self.log('train_jaccard', self.train_jaccard, on_step=True, on_epoch=False)
-        self.log('train_dice', self.train_dice, on_step=True, on_epoch=False)
-        self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=True)
+        
+        sep_mask_list = torch.stack(sep_mask_list)
+        sep_gt_mask_list = torch.stack(sep_gt_mask_list)
+        
+        self.val_jaccard(mask_list, gt_mask_list)
+        self.val_dice(mask_list, gt_mask_list)
+        self.log('val_jaccard_multi_obj', self.val_jaccard, on_step=True, on_epoch=False)
+        self.log('val_dice_multi_obj', self.val_dice, on_step=True, on_epoch=False)
+        
+        self.val_jaccard_sep(sep_mask_list, sep_gt_mask_list)
+        self.val_dice_sep(sep_mask_list, sep_gt_mask_list)
+        self.log('val_jaccard_single_obj', self.val_jaccard_sep, on_step=True, on_epoch=False)
+        self.log('val_dice_single_obj', self.val_dice_sep, on_step=True, on_epoch=False)
+        
+        self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=False)
+   
+    

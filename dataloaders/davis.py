@@ -31,7 +31,7 @@ class VOSDataset(Dataset):
         self.max_jump = max_jump
         self.num_frames = num_frames
         self.max_num_obj = max_num_obj
-
+        self.val = val
         self.videos = []
         self.frames = {}
 
@@ -133,24 +133,27 @@ class VOSDataset(Dataset):
                 png_name = frames[f_idx][:-4] + '.png'
                 info['frames'].append(jpg_name)
 
-                reseed(sequence_seed)
                 this_im = Image.open(path.join(vid_im_path, jpg_name)).convert('RGB')
-                this_im = self.all_im_dual_transform(this_im)
-                this_im = self.all_im_lone_transform(this_im)
-                reseed(sequence_seed)
+                if not self.val:
+                    reseed(sequence_seed)
+                    this_im = self.all_im_dual_transform(this_im)
+                    this_im = self.all_im_lone_transform(this_im)
+                
                 this_gt = Image.open(path.join(vid_gt_path, png_name)).convert('P')
-                this_gt = self.all_gt_dual_transform(this_gt)
+                if not self.val:
+                    reseed(sequence_seed)
+                    this_gt = self.all_gt_dual_transform(this_gt)
 
-                pairwise_seed = np.random.randint(2147483647)
-                reseed(pairwise_seed)
-                this_im = self.pair_im_dual_transform(this_im)
-                this_im = self.pair_im_lone_transform(this_im)
-                reseed(pairwise_seed)
-                this_gt = self.pair_gt_dual_transform(this_gt)
+                    pairwise_seed = np.random.randint(2147483647)
+                    reseed(pairwise_seed)
+                    this_im = self.pair_im_dual_transform(this_im)
+                    this_im = self.pair_im_lone_transform(this_im)
+                    reseed(pairwise_seed)
+                    this_gt = self.pair_gt_dual_transform(this_gt)
 
-                cropped_img = pil_to_tensor(this_im)
-                this_im = torch.as_tensor(self.resize_longest.apply_image(np.array(this_im, dtype=np.uint8))).permute(2, 0, 1)
-                this_gt = np.array(this_gt)
+                cropped_img = pil_to_tensor(this_im.resize((1920, 1080), Image.NEAREST))
+                this_im = torch.as_tensor(self.resize_longest.apply_image(np.array(this_im.resize((1920, 1080), Image.NEAREST), dtype=np.uint8))).permute(2, 0, 1)
+                this_gt = np.array(this_gt.resize((1920, 1080), Image.NEAREST))
 
                 images.append(this_im)
                 masks.append(this_gt)
@@ -167,7 +170,10 @@ class VOSDataset(Dataset):
             else:
                 target_objects = labels.tolist()
                 break
-
+        
+        if trials == 5:
+            return self.__getitem__(np.random.randint(len(self.videos)))
+        
         if len(target_objects) > self.max_num_obj:
             target_objects = np.random.choice(target_objects, size=self.max_num_obj, replace=False)
 
@@ -175,10 +181,11 @@ class VOSDataset(Dataset):
 
         masks = np.stack(masks, 0)
 
+        H, W = tuple(masks.shape[1:])
         # Generate one-hot ground-truth
-        cls_gt = np.zeros((self.num_frames, 1080, 1920), dtype=np.int64)
-        first_frame_gt = np.zeros((1, self.max_num_obj, 1080, 1920), dtype=np.int64)
-        all_frame_gt = np.zeros((self.num_frames, self.max_num_obj, 1080, 1920), dtype=np.int64) # Shape explains itself
+        cls_gt = np.zeros((self.num_frames, H, W), dtype=np.int64)
+        first_frame_gt = np.zeros((1, self.max_num_obj, H, W), dtype=np.int64)
+        all_frame_gt = np.zeros((self.num_frames, self.max_num_obj, H, W), dtype=np.int64) # Shape explains itself
         for t in range(self.num_frames):
             for i, l in enumerate(target_objects):
                 this_mask = (masks==l)
@@ -187,7 +194,7 @@ class VOSDataset(Dataset):
                 all_frame_gt[t,i] = (this_mask[t])
 
         cls_gt = np.expand_dims(cls_gt, 1)
-        prev_frame_gt = all_frame_gt[:-1].reshape(-1, 1080, 1920)
+        prev_frame_gt = all_frame_gt[:-1].reshape(-1, H, W)
         new_prev_frame_gt = []
         for t in range(len(prev_frame_gt)):
             new_prev_frame_gt.append(torch.as_tensor(self.resize_longest.apply_image(prev_frame_gt[t].astype(dtype=np.uint8))))

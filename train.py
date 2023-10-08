@@ -1,8 +1,8 @@
 import lightning as L
 import torch
-
+import wandb
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint, ModelSummary
+from lightning.pytorch.callbacks import Callback, ModelSummary
 from omegaconf import OmegaConf
 
 from segment_anything import sam_model_registry
@@ -17,7 +17,9 @@ config = {
     "precision": "32",
     "num_devices": 1,
     "num_epochs": 50,
-    "metric_train_eval_interval": 250,
+    "save_log_weights_interval": 15,
+    "metric_train_eval_interval": 90,
+    "model_checkpoint_at": "checkpoints",
     "img_size": 1024,
     "out_dir": "/",
     "opt": {
@@ -56,15 +58,51 @@ model = CamoSam(cfg, model)
 
 train_dataloader, validation_dataloader = get_loader(cfg.dataset)
 
+class WandB_Logger(Callback):
+    def __init__(self, cfg, wb):
+        self.logged_weight_epoch = 0
+        self.cfg = cfg
+        self.wb = wb
+        
+        if cfg.model_checkpoint_at not in os.listdir():
+            os.mkdir(cfg.model_checkpoint_at)
+            
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if (pl_module.current_epoch) % self.cfg.save_log_weights_interval == 0:
+            model_name = f"{os.path.join(cfg.model_checkpoint_at, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
+            
+            if pl_module.current_epoch == 0:
+                pl_module.train_benchmark = []
+                pl_module.val_benchmark = []
+            else:
+                pl_module.train_benchmark = sum(pl_module.train_benchmark) / len(pl_module.train_benchmark)
+                pl_module.val_benchmark = sum(pl_module.val_benchmark) / len(pl_module.val_benchmark)
+            
+            torch.save({
+                        'cfg': self.cfg,
+                        'epoch': pl_module.current_epoch,
+                        'model_state_dict': pl_module.model.state_dict(),
+                        'optimizer_state_dict': pl_module.optimizers().state_dict() if type(pl_module.optimizers())!=list else {},
+                        'benchmark': [pl_module.train_benchmark, pl_module.val_benchmark],
+            }, model_name)
+            my_model = wandb.Artifact(f"model_{self.wb.id}", type="model")
+            my_model.add_file(model_name)
+            self.wb.log_artifact(my_model)
+            # Link the model to the Model Registry
+            self.wb.link_artifact(my_model, f"DAVIS Propagation/Model_arch_1")
+            
+        pl_module.train_benchmark = []
+        pl_module.val_benchmark = []
+
 # torch._dynamo.config.verbose=True # for debugging
 wandblogger = WandbLogger(project="DAVIS Propagation")
 wandblogger.experiment.config.update(config)
-checkpoint_callback = ModelCheckpoint(
-    dirpath="./checkpoint", every_n_epochs=1, save_top_k=-1
-)
+model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
+
 trainer = L.Trainer(
     accelerator=device,
-    callbacks=[ModelSummary(max_depth=2), checkpoint_callback],
+    callbacks=[ModelSummary(max_depth=2), model_weight_callback],
     precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
@@ -73,4 +111,5 @@ trainer = L.Trainer(
     check_val_every_n_epoch=20,
 )
 
+trainer.validate(model, validation_dataloader)
 trainer.fit(model, train_dataloader, validation_dataloader)
