@@ -4,6 +4,8 @@ wandb
 MoCA-Mask
 checkpoint
 
+*.ckpt
+
 .nfs*
 
 # compilation and distribution

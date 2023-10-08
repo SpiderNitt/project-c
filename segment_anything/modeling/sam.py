@@ -108,10 +108,10 @@ class Sam(nn.Module):
         torch.cuda.empty_cache()
         '''
         # We disable grad since we are not updating the image encoder weights
-        # with torch.no_grad():
-        #     image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(batched_input["selector"]), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
-        # torch.cuda.empty_cache()
-        image_embeddings = torch.randn(len(batched_input["selector"]), self.num_frames, 256, 64, 64).to(self.device)
+        with torch.no_grad():
+            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(batched_input["selector"]), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
+        torch.cuda.empty_cache()
+        # image_embeddings = torch.randn(len(batched_input["selector"]), self.num_frames, 256, 64, 64).to(self.device)
         
         prev_masks = batched_input["prev_masks"] # (B, [F-1]=2, P=3, 256, 256)
         prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
