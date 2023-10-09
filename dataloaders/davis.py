@@ -237,8 +237,8 @@ def get_loader(cfg):
         dataset=train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
-        num_workers=cfg.num_workers,
-        pin_memory=cfg.pin_memory,
+        # num_workers=cfg.num_workers,
+        # pin_memory=cfg.pin_memory,
     )
     
     with open(cfg.root_dir+'ImageSets/2017/val.txt', 'r') as file:
@@ -255,8 +255,8 @@ def get_loader(cfg):
         dataset=val_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=cfg.num_workers,
-        pin_memory=cfg.pin_memory,
+        # num_workers=cfg.num_workers,
+        # pin_memory=cfg.pin_memory,
     )
 
     return train_data_loader, val_data_loader

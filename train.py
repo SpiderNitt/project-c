@@ -19,8 +19,8 @@ torch.set_float32_matmul_precision('medium')
 # DAVIS
 config = {
     "precision": "32",
-    "num_devices": 2,
-    "num_epochs": 500,
+    "num_devices": 1,
+    "num_epochs": 5,
     "save_log_weights_interval": 20,
     "metric_train_eval_interval": 20,
     "model_checkpoint_at": "checkpoints",
@@ -62,56 +62,56 @@ model = sam_model_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=
 model = CamoSam(cfg, model)
 # model = torch.compile(model, mode="reduce-overhead")
 
-class LitDataModule(LightningDataModule):
-    def __init__(self, batch_size):
-        super().__init__()
-        self.save_hyperparameters()
-        # or
-        self.batch_size = batch_size
-        self.cfg = cfg
+# class LitDataModule(LightningDataModule):
+#     def __init__(self, batch_size):
+#         super().__init__()
+#         self.save_hyperparameters()
+#         # or
+#         self.batch_size = batch_size
+#         self.cfg = cfg
 
-    def train_dataloader(self):
-        with open(self.cfg.dataset.root_dir+'ImageSets/2017/train.txt', 'r') as file:
-            train_list = [line.strip() for line in file]
-        print("Training Samples: ",len(train_list))
+#     def train_dataloader(self):
+#         with open(self.cfg.dataset.root_dir+'ImageSets/2017/train.txt', 'r') as file:
+#             train_list = [line.strip() for line in file]
+#         print("Training Samples: ",len(train_list))
 
-        train_dataset = VOSDataset(self.cfg.dataset.root_dir+'JPEGImages/Full-Resolution', 
-                                   self.cfg.dataset.root_dir+'Annotations/Full-Resolution', 
-                                   train_list ,max_jump=self.cfg.dataset.max_jump, 
-                                   num_frames=self.cfg.dataset.num_frames,  
-                                   max_num_obj=self.cfg.dataset.max_num_obj, 
-                                   val=False)
-        train_data_loader = data.DataLoader(
-            dataset=train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.cfg.dataset.num_workers,
-            pin_memory=self.cfg.dataset.pin_memory,
-        )
+#         train_dataset = VOSDataset(self.cfg.dataset.root_dir+'JPEGImages/Full-Resolution', 
+#                                    self.cfg.dataset.root_dir+'Annotations/Full-Resolution', 
+#                                    train_list ,max_jump=self.cfg.dataset.max_jump, 
+#                                    num_frames=self.cfg.dataset.num_frames,  
+#                                    max_num_obj=self.cfg.dataset.max_num_obj, 
+#                                    val=False)
+#         train_data_loader = data.DataLoader(
+#             dataset=train_dataset,
+#             batch_size=self.batch_size,
+#             shuffle=True,
+#             # num_workers=self.cfg.dataset.num_workers,
+#             # pin_memory=self.cfg.dataset.pin_memory,
+#         )
         
-        return train_data_loader
+#         return train_data_loader
     
-    def val_dataloader(self):
+#     def val_dataloader(self):
 
-        with open(self.cfg.dataset.root_dir+'ImageSets/2017/val.txt', 'r') as file:
-            val_list = [line.strip() for line in file]
-        print("Validation Samples: ",len(val_list))
+#         with open(self.cfg.dataset.root_dir+'ImageSets/2017/val.txt', 'r') as file:
+#             val_list = [line.strip() for line in file]
+#         print("Validation Samples: ",len(val_list))
 
-        val_dataset = VOSDataset(self.cfg.dataset.root_dir+'JPEGImages/Full-Resolution', 
-                                 self.cfg.dataset.root_dir+'Annotations/Full-Resolution', 
-                                 val_list, max_jump=self.cfg.dataset.max_jump, 
-                                 num_frames=self.cfg.dataset.num_frames,  
-                                 max_num_obj=self.cfg.dataset.max_num_obj, 
-                                 val=True)
-        val_data_loader = data.DataLoader(
-            dataset=val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.cfg.dataset.num_workers,
-            pin_memory=self.cfg.dataset.pin_memory,
-        )
+#         val_dataset = VOSDataset(self.cfg.dataset.root_dir+'JPEGImages/Full-Resolution', 
+#                                  self.cfg.dataset.root_dir+'Annotations/Full-Resolution', 
+#                                  val_list, max_jump=self.cfg.dataset.max_jump, 
+#                                  num_frames=self.cfg.dataset.num_frames,  
+#                                  max_num_obj=self.cfg.dataset.max_num_obj, 
+#                                  val=True)
+#         val_data_loader = data.DataLoader(
+#             dataset=val_dataset,
+#             batch_size=self.batch_size,
+#             shuffle=False,
+#             # num_workers=self.cfg.dataset.num_workers,
+#             # pin_memory=self.cfg.dataset.pin_memory,
+#         )
 
-        return val_data_loader
+#         return val_data_loader
 
 class WandB_Logger(Callback):
     def __init__(self, cfg, wb):
@@ -152,27 +152,30 @@ class WandB_Logger(Callback):
 
 # torch._dynamo.config.verbose=True # for debugging
 wandblogger = WandbLogger(project="DAVIS Propagation")
-wandblogger.experiment.config.update(config)
 model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
 lr_monitor = LearningRateMonitor(logging_interval='step')
 
-datamodule = LitDataModule(cfg.dataset.batch_size)
+# datamodule = LitDataModule(cfg.dataset.batch_size)
 trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
-    callbacks=[lr_monitor, ModelSummary(max_depth=2), model_weight_callback],
+    callbacks=[model_weight_callback],
     precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
-    # strategy="ddp",
+    strategy="ddp",
     log_every_n_steps=10,
     check_val_every_n_epoch=20,
+    enable_checkpointing=False,
+    profiler='simple'
 )
-
+if trainer.global_rank == 0:
+    wandblogger.experiment.config.update(config)
 # tuner = Tuner(trainer)
 # tuner.lr_find(model, datamodule=datamodule)
 # #     #TODO: Add scale batch size
 # tuner.scale_batch_size(model, datamodule=datamodule)
 
-trainer.validate(model, datamodule=datamodule)
-trainer.fit(model, datamodule=datamodule)
+train_dataloader, validation_dataloader = get_loader(cfg.dataset)
+trainer.validate(model, validation_dataloader)
+trainer.fit(model, train_dataloader, validation_dataloader)
