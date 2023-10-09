@@ -37,25 +37,22 @@ class CamoSam(L.LightningModule):
         self.model = model
         for param in self.model.parameters():
             param.requires_grad = False
-        
-        for param in self.model.propagation_module.parameters():
-            param.requires_grad = False
-            
-        for p in self.model.propagation_module.sparse_embedding_conv[0].parameters():
+
+        for p in self.model.propagation_module.parameters():
             p.requires_grad = True
     
         self.cfg = config
-        self.batch_freq = self.cfg.metric_train_eval_interval
+        self.epoch_freq = self.cfg.metric_train_eval_interval
 
         self.train_jaccard = torchmetrics.JaccardIndex(task="multiclass", num_classes=self.cfg.dataset.max_num_obj+1)
         self.val_jaccard = torchmetrics.JaccardIndex(task="multiclass", num_classes=self.cfg.dataset.max_num_obj+1)
         self.train_dice = torchmetrics.Dice(num_classes=self.cfg.dataset.max_num_obj+1)
         self.val_dice = torchmetrics.Dice(num_classes=self.cfg.dataset.max_num_obj+1)
         
-        self.train_jaccard_sep = torchmetrics.JaccardIndex(task="multiclass", num_classes=2)
-        self.val_jaccard_sep = torchmetrics.JaccardIndex(task="multiclass", num_classes=2)
-        self.train_dice_sep = torchmetrics.Dice(num_classes=2)
-        self.val_dice_sep = torchmetrics.Dice(num_classes=2)
+        # self.train_jaccard_sep = torchmetrics.JaccardIndex(task="multiclass", num_classes=2)
+        # self.val_jaccard_sep = torchmetrics.JaccardIndex(task="multiclass", num_classes=2)
+        # self.train_dice_sep = torchmetrics.Dice(num_classes=2)
+        # self.val_dice_sep = torchmetrics.Dice(num_classes=2)
         
         self.train_benchmark = []
         self.val_benchmark = []
@@ -71,7 +68,7 @@ class CamoSam(L.LightningModule):
         return self.model(batched_input, multimask_output)
     
     def check_frequency(self, check_idx):
-        return check_idx % self.batch_freq == 0
+        return check_idx % self.epoch_freq == 0
     
     @torch.no_grad()
     def log_images(self,img_list, mask_list, gt_list, batch_idx, train=True):
@@ -84,9 +81,9 @@ class CamoSam(L.LightningModule):
             
             table.add_data(id, mask_img)
         if train:
-            wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Train" : table})
+            wandb.log({f"Images/Train/Epoch:{self.current_epoch}_{batch_idx}" : table})
         else:
-            wandb.log({f"Images/Epoch:{self.current_epoch}_{batch_idx}_Validation" : table})
+            wandb.log({f"Images/Validation/Epoch:{self.current_epoch}_{batch_idx}" : table})
 
     def sigmoid_focal_loss(
         self,
@@ -187,8 +184,10 @@ class CamoSam(L.LightningModule):
             return 1.0
         elif step < self.cfg.opt.steps[1]:
             return 1 / self.cfg.opt.decay_factor
-        else:
+        elif step < self.cfg.opt.steps[2]:
             return 1 / (self.cfg.opt.decay_factor**2)
+        else:
+            return 1 / (self.cfg.opt.decay_factor**3)
 
     def configure_optimizers(self) -> Any:
         print("Using Learning Rate: ", self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate, f"instead of {self.cfg.opt.learning_rate}")
@@ -200,8 +199,8 @@ class CamoSam(L.LightningModule):
             weight_decay=self.cfg.opt.weight_decay,
             amsgrad=False,
         )
-        # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, self.lr_lambda)
-        return [optimizer] #, [scheduler]
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, self.lr_lambda)
+        return [optimizer] ,[scheduler]
 
     def training_step(self, batch, batch_idx):
         output = self(batch, False)
@@ -238,8 +237,8 @@ class CamoSam(L.LightningModule):
             )
 
         # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
-        loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
-        avg_focal = loss_focal / bs
+        loss_total = (self.cfg.focal_wt * loss_focal + loss_dice + loss_iou) / bs
+        avg_focal = self.cfg.focal_wt * loss_focal / bs
         avg_dice = loss_dice / bs
         avg_iou = loss_iou / bs
         
@@ -283,8 +282,8 @@ class CamoSam(L.LightningModule):
             )
 
         # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
-        loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
-        avg_focal = loss_focal / bs
+        loss_total = (self.cfg.focal_wt * loss_focal + loss_dice + loss_iou) / bs
+        avg_focal = self.cfg.focal_wt * loss_focal / bs
         avg_dice = loss_dice / bs
         avg_iou = loss_iou / bs
 
@@ -294,7 +293,7 @@ class CamoSam(L.LightningModule):
         return {'loss': loss_total, 'masks': pred_masks_list}
     
     def on_train_batch_end(self, output, batch, batch_idx):
-        if self.check_frequency(batch_idx):
+        if self.check_frequency(self.current_epoch) and batch_idx < 5:
             img_list = []
             mask_list = []
             sep_mask_list = []
@@ -320,18 +319,18 @@ class CamoSam(L.LightningModule):
             mask_list = torch.stack(mask_list)
             gt_mask_list = torch.stack(gt_mask_list)
             
-            sep_mask_list = torch.stack(sep_mask_list)
-            sep_gt_mask_list = torch.stack(sep_gt_mask_list)
+            # sep_mask_list = torch.stack(sep_mask_list)
+            # sep_gt_mask_list = torch.stack(sep_gt_mask_list)
             
             self.train_jaccard(mask_list, gt_mask_list)
             self.train_dice(mask_list, gt_mask_list)
             self.log('train_jaccard_multi_obj', self.train_jaccard, on_step=True, on_epoch=False)
             self.log('train_dice_multi_obj', self.train_dice, on_step=True, on_epoch=False)
             
-            self.train_jaccard_sep(sep_mask_list, sep_gt_mask_list)
-            self.train_dice_sep(sep_mask_list, sep_gt_mask_list)
-            self.log('train_jaccard_single_obj', self.train_jaccard_sep, on_step=True, on_epoch=False)
-            self.log('train_dice_single_obj', self.train_dice_sep, on_step=True, on_epoch=False)
+            # self.train_jaccard_sep(sep_mask_list, sep_gt_mask_list)
+            # self.train_dice_sep(sep_mask_list, sep_gt_mask_list)
+            # self.log('train_jaccard_single_obj', self.train_jaccard_sep, on_step=True, on_epoch=False)
+            # self.log('train_dice_single_obj', self.train_dice_sep, on_step=True, on_epoch=False)
             
             self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=True)
    
@@ -360,18 +359,18 @@ class CamoSam(L.LightningModule):
         mask_list = torch.stack(mask_list)
         gt_mask_list = torch.stack(gt_mask_list)
         
-        sep_mask_list = torch.stack(sep_mask_list)
-        sep_gt_mask_list = torch.stack(sep_gt_mask_list)
+        # sep_mask_list = torch.stack(sep_mask_list)
+        # sep_gt_mask_list = torch.stack(sep_gt_mask_list)
         
         self.val_jaccard(mask_list, gt_mask_list)
         self.val_dice(mask_list, gt_mask_list)
         self.log('val_jaccard_multi_obj', self.val_jaccard, on_step=True, on_epoch=False)
         self.log('val_dice_multi_obj', self.val_dice, on_step=True, on_epoch=False)
         
-        self.val_jaccard_sep(sep_mask_list, sep_gt_mask_list)
-        self.val_dice_sep(sep_mask_list, sep_gt_mask_list)
-        self.log('val_jaccard_single_obj', self.val_jaccard_sep, on_step=True, on_epoch=False)
-        self.log('val_dice_single_obj', self.val_dice_sep, on_step=True, on_epoch=False)
+        # self.val_jaccard_sep(sep_mask_list, sep_gt_mask_list)
+        # self.val_dice_sep(sep_mask_list, sep_gt_mask_list)
+        # self.log('val_jaccard_single_obj', self.val_jaccard_sep, on_step=True, on_epoch=False)
+        # self.log('val_dice_single_obj', self.val_dice_sep, on_step=True, on_epoch=False)
         
         self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=False)
    

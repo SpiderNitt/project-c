@@ -13,24 +13,26 @@ from segment_anything.modeling import CamoSam
 from dataloaders.davis import get_loader, VOSDataset
 
 import os
+torch.set_float32_matmul_precision('medium')
 
 # DAVIS
 config = {
     "precision": "32",
     "num_devices": 1,
-    "num_epochs": 100,
-    "save_log_weights_interval": 15,
-    "metric_train_eval_interval": 90,
+    "num_epochs": 500,
+    "save_log_weights_interval": 20,
+    "metric_train_eval_interval": 20,
     "model_checkpoint_at": "checkpoints",
     "img_size": 1024,
     "out_dir": "/",
+    "focal_wt": 20,
     "opt": {
-        "learning_rate": 3e-4, #3e-4
+        "learning_rate": 4e-4, #4e-4
         "auto_lr": True,
         "weight_decay": 1e-4,
-        "decay_factor": 10,
-        "steps": [60000, 86666],
-        "warmup_steps": 250,
+        "decay_factor": 4,
+        "steps": [2000, 3500, 4500],
+        "warmup_steps": 100,
     },
     "model": {
         "type": "vit_b",
@@ -43,7 +45,7 @@ config = {
     },
     "dataset": {
         "root_dir": "raw/DAVIS/",
-        "batch_size": 1,
+        "batch_size": 6,
         "max_num_obj": 3,
         "num_frames": 3,
         "max_jump": 5,
@@ -110,8 +112,6 @@ class LitDataModule(LightningDataModule):
 
         return val_data_loader
 
-
-
 class WandB_Logger(Callback):
     def __init__(self, cfg, wb):
         self.logged_weight_epoch = 0
@@ -163,18 +163,14 @@ trainer = L.Trainer(
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
     # strategy="ddp",
-    # log_every_n_steps=cfg.log_every_n_steps,
-    check_val_every_n_epoch=15,
+    log_every_n_steps=10,
+    check_val_every_n_epoch=20,
 )
 
-
-if cfg.opt.auto_lr:
-    # trainer.tune(model)
-    tuner = Tuner(trainer)
-    tuner.lr_find(model, datamodule=datamodule)
-#     #TODO: Add scale batch size
-    # tuner.scale_batch_size(model, datamodule=datamodule)
-
+tuner = Tuner(trainer)
+# tuner.lr_find(model, datamodule=datamodule)
+# #     #TODO: Add scale batch size
+tuner.scale_batch_size(model, datamodule=datamodule)
 
 trainer.validate(model, datamodule=datamodule)
 trainer.fit(model, datamodule=datamodule)

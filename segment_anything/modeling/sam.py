@@ -110,7 +110,7 @@ class Sam(nn.Module):
         # We disable grad since we are not updating the image encoder weights
         with torch.no_grad():
             image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(batched_input["selector"]), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         # image_embeddings = torch.randn(len(batched_input["selector"]), self.num_frames, 256, 64, 64).to(self.device)
         
         prev_masks = batched_input["prev_masks"] # (B, [F-1]=2, P=3, 256, 256)
@@ -127,7 +127,7 @@ class Sam(nn.Module):
         all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (B, P=3, 256, 64, 64)
 
         outputs = []
-        for curr_embedding, prop_sparse_embeddings, prop_dense_embeddings in zip(image_embeddings[:, -1], all_sparse_embeddings, all_dense_embeddings):
+        for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, -1], all_sparse_embeddings, all_dense_embeddings)):
             # curr_embedding: (256, 64, 64) -> current target frame embedding
             # prop_dense_embeddings: (3, 256, 64, 64) -> basically we have 3 prompts
             # prop_sparse_embeddings: (3, 8, 256) -> basically we have 3 prompts, each prompt has 8 points
@@ -142,7 +142,7 @@ class Sam(nn.Module):
             masks = self.postprocess_masks(
                 low_res_masks,
                 input_size=batched_input["image"].shape[-2:],
-                original_size=batched_input["original_size"][-2:],
+                original_size=(batched_input["original_size"][0][i], batched_input["original_size"][1][i])
             )
             
             outputs.append(
