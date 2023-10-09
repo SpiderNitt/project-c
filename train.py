@@ -9,6 +9,7 @@ from lightning.pytorch.tuner import Tuner
 import torch.utils.data as data
 from segment_anything import sam_model_registry
 from segment_anything.modeling import CamoSam
+from lightning.pytorch.utilities.rank_zero import rank_zero_only, rank_zero_warn
 
 from dataloaders.davis import get_loader, VOSDataset
 
@@ -18,7 +19,7 @@ torch.set_float32_matmul_precision('medium')
 # DAVIS
 config = {
     "precision": "32",
-    "num_devices": 1,
+    "num_devices": 2,
     "num_epochs": 500,
     "save_log_weights_interval": 20,
     "metric_train_eval_interval": 20,
@@ -27,11 +28,11 @@ config = {
     "out_dir": "/",
     "focal_wt": 20,
     "opt": {
-        "learning_rate": 4e-4, #4e-4
+        "learning_rate": 3e-4, #4e-4
         "auto_lr": True,
         "weight_decay": 1e-4,
         "decay_factor": 4,
-        "steps": [2000, 3500, 4500],
+        "steps": [2500, 4500, 6500],
         "warmup_steps": 100,
     },
     "model": {
@@ -45,11 +46,11 @@ config = {
     },
     "dataset": {
         "root_dir": "raw/DAVIS/",
-        "batch_size": 6,
+        "batch_size": 2,
         "max_num_obj": 3,
         "num_frames": 3,
         "max_jump": 5,
-        "num_workers": 4,
+        "num_workers": 32,
         "pin_memory": True,
     },
 }
@@ -121,7 +122,7 @@ class WandB_Logger(Callback):
         if cfg.model_checkpoint_at not in os.listdir():
             os.mkdir(cfg.model_checkpoint_at)
             
-
+    @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
         if (pl_module.current_epoch) % self.cfg.save_log_weights_interval == 0:
             model_name = f"{os.path.join(cfg.model_checkpoint_at, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
@@ -158,6 +159,7 @@ lr_monitor = LearningRateMonitor(logging_interval='step')
 datamodule = LitDataModule(cfg.dataset.batch_size)
 trainer = L.Trainer(
     accelerator=device,
+    devices=cfg.num_devices,
     callbacks=[lr_monitor, ModelSummary(max_depth=2), model_weight_callback],
     precision=cfg.precision,
     logger=wandblogger,
@@ -167,10 +169,10 @@ trainer = L.Trainer(
     check_val_every_n_epoch=20,
 )
 
-tuner = Tuner(trainer)
+# tuner = Tuner(trainer)
 # tuner.lr_find(model, datamodule=datamodule)
 # #     #TODO: Add scale batch size
-tuner.scale_batch_size(model, datamodule=datamodule)
+# tuner.scale_batch_size(model, datamodule=datamodule)
 
 trainer.validate(model, datamodule=datamodule)
 trainer.fit(model, datamodule=datamodule)

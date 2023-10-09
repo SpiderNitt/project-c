@@ -72,18 +72,18 @@ class CamoSam(L.LightningModule):
     
     @torch.no_grad()
     def log_images(self,img_list, mask_list, gt_list, batch_idx, train=True):
-        table = wandb.Table(columns=['ID', 'Image'])
+        table = []
 
         for id, (img, gt, pred) in enumerate(zip(img_list, gt_list, mask_list)):
             mask_img = wandb.Image(img.float(), masks = {
                 "prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}
             })
             
-            table.add_data(id, mask_img)
+            table.append(mask_img)
         if train:
-            wandb.log({f"Images/Train/Epoch:{self.current_epoch}_{batch_idx}" : table})
+            self.logger.log_image(key=f"Images/Train/Epoch:{self.current_epoch}_{batch_idx}", images=table)
         else:
-            wandb.log({f"Images/Validation/Epoch:{self.current_epoch}_{batch_idx}" : table})
+            self.logger.log_image(key=f"Images/Validation/Epoch:{self.current_epoch}_{batch_idx}", images=table)
 
     def sigmoid_focal_loss(
         self,
@@ -243,7 +243,7 @@ class CamoSam(L.LightningModule):
         avg_iou = loss_iou / bs
         
         self.train_benchmark.append(loss_total.item())
-        self.log_dict({"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log_dict({"Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {'loss': loss_total, 'masks': pred_masks_list}
     
@@ -288,12 +288,12 @@ class CamoSam(L.LightningModule):
         avg_iou = loss_iou / bs
 
         self.val_benchmark.append(loss_total.item())
-        self.log_dict({"Loss/val_total_loss" : loss_total, "Loss/val_focal_loss" : avg_focal, "Loss/val_dice_loss" : avg_dice, "Loss/val_iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return {'loss': loss_total, 'masks': pred_masks_list}
     
     def on_train_batch_end(self, output, batch, batch_idx):
-        if self.check_frequency(self.current_epoch) and batch_idx < 5:
+        if self.check_frequency(self.current_epoch):
             img_list = []
             mask_list = []
             sep_mask_list = []
@@ -324,15 +324,15 @@ class CamoSam(L.LightningModule):
             
             self.train_jaccard(mask_list, gt_mask_list)
             self.train_dice(mask_list, gt_mask_list)
-            self.log('train_jaccard_multi_obj', self.train_jaccard, on_step=True, on_epoch=False)
-            self.log('train_dice_multi_obj', self.train_dice, on_step=True, on_epoch=False)
+            self.log('train_jaccard_multi_obj', self.train_jaccard, on_step=True, on_epoch=False, sync_dist=True)
+            self.log('train_dice_multi_obj', self.train_dice, on_step=True, on_epoch=False, sync_dist=True)
             
             # self.train_jaccard_sep(sep_mask_list, sep_gt_mask_list)
             # self.train_dice_sep(sep_mask_list, sep_gt_mask_list)
             # self.log('train_jaccard_single_obj', self.train_jaccard_sep, on_step=True, on_epoch=False)
             # self.log('train_dice_single_obj', self.train_dice_sep, on_step=True, on_epoch=False)
-            
-            self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=True)
+            if batch_idx < 5:
+                self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=True)
    
     
     def on_validation_batch_end(self, output, batch, batch_idx):
@@ -364,8 +364,8 @@ class CamoSam(L.LightningModule):
         
         self.val_jaccard(mask_list, gt_mask_list)
         self.val_dice(mask_list, gt_mask_list)
-        self.log('val_jaccard_multi_obj', self.val_jaccard, on_step=True, on_epoch=False)
-        self.log('val_dice_multi_obj', self.val_dice, on_step=True, on_epoch=False)
+        self.log('val_jaccard_multi_obj', self.val_jaccard, on_step=True, on_epoch=False, sync_dist=True)
+        self.log('val_dice_multi_obj', self.val_dice, on_step=True, on_epoch=False, sync_dist=True)
         
         # self.val_jaccard_sep(sep_mask_list, sep_gt_mask_list)
         # self.val_dice_sep(sep_mask_list, sep_gt_mask_list)
@@ -373,5 +373,3 @@ class CamoSam(L.LightningModule):
         # self.log('val_dice_single_obj', self.val_dice_sep, on_step=True, on_epoch=False)
         
         self.log_images(img_list, mask_list.cpu().numpy(), gt_mask_list.cpu().numpy(), batch_idx=batch_idx, train=False)
-   
-    
