@@ -13,12 +13,18 @@ class PropagationModule(nn.Module):
         self.num_frames = cfg.dataset.num_frames
         
         self.attention = MemoryEfficientAttention(256, 256, 4)
-        self.dense_embedding_linear = nn.Linear(256, 256)
+        self.dense_embedding_linear = nn.Sequential(
+            nn.Linear(256, 256),
+            nn.GELU(),
+            nn.Linear(256, 256)
+        )
         self.self_attention = MemoryEfficientSelfAttention(256, 256, 4)
         self.sparse_embedding_conv = nn.Sequential(
-            nn.Conv1d(64*64, 32, kernel_size=1),
+            nn.Conv1d(64*64, 64, kernel_size=1),
             nn.GELU(),
-            nn.Conv1d(32, 8, kernel_size=1)
+            nn.Conv1d(64, 64, kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(64, 16, kernel_size=1),
         )
 
     def forward(self, embeddings: dict) -> torch.Tensor:

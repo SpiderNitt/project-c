@@ -18,22 +18,23 @@ torch.set_float32_matmul_precision('medium')
 
 # DAVIS
 config = {
+    "description": "Original model with more params and 16 tokens for sparse embeddings",
     "precision": "32",
     "num_devices": 1,
-    "num_epochs": 5,
-    "save_log_weights_interval": 20,
-    "metric_train_eval_interval": 20,
+    "num_epochs": 500,
+    "save_log_weights_interval": 25,
+    "metric_train_eval_interval": 25,
     "model_checkpoint_at": "checkpoints",
     "img_size": 1024,
     "out_dir": "/",
     "focal_wt": 20,
     "opt": {
-        "learning_rate": 3e-4, #4e-4
+        "learning_rate": 3e-4, #1e-4
         "auto_lr": True,
         "weight_decay": 1e-4,
-        "decay_factor": 4,
-        "steps": [2500, 4500, 6500],
-        "warmup_steps": 100,
+        "decay_factor": 2,
+        "steps": [2000, 3000, 4500, 5500, 7000],
+        "warmup_steps": 50,
     },
     "model": {
         "type": "vit_b",
@@ -46,20 +47,27 @@ config = {
     },
     "dataset": {
         "root_dir": "raw/DAVIS/",
-        "batch_size": 2,
+        "batch_size": 4,
         "max_num_obj": 3,
         "num_frames": 3,
         "max_jump": 5,
-        "num_workers": 32,
+        "num_workers": 4,
         "pin_memory": True,
     },
 }
 cfg = OmegaConf.create(config)
 
+# api = wandb.Api()
+# artifact = api.artifact('spider-r-d/DAVIS Propagation/model_cyzxvd5f:v26', type='model')
+# artifact_dir = artifact.download()
+
+# ckpt = torch.load('artifacts/model_cyzxvd5f:v26/499_epoch_7500_global_step.pth')
+ckpt = None
+
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = sam_model_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
-model = CamoSam(cfg, model)
+model = CamoSam(cfg, model, ckpt=ckpt)
 # model = torch.compile(model, mode="reduce-overhead")
 
 # class LitDataModule(LightningDataModule):
@@ -124,34 +132,34 @@ class WandB_Logger(Callback):
             
     @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
-        if (pl_module.current_epoch) % self.cfg.save_log_weights_interval == 0:
-            model_name = f"{os.path.join(cfg.model_checkpoint_at, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
-            
-            if pl_module.current_epoch == 0:
-                pl_module.train_benchmark = []
-                pl_module.val_benchmark = []
-            else:
-                pl_module.train_benchmark = sum(pl_module.train_benchmark) / len(pl_module.train_benchmark)
-                pl_module.val_benchmark = sum(pl_module.val_benchmark) / len(pl_module.val_benchmark)
-            
-            torch.save({
-                        'cfg': self.cfg,
-                        'epoch': pl_module.current_epoch,
-                        'model_state_dict': pl_module.model.propagation_module.state_dict(),
-                        'optimizer_state_dict': pl_module.optimizers().state_dict() if type(pl_module.optimizers())!=list else {},
-                        'benchmark': [pl_module.train_benchmark, pl_module.val_benchmark],
-            }, model_name)
-            my_model = wandb.Artifact(f"model_{self.wb.id}", type="model")
-            my_model.add_file(model_name)
-            self.wb.log_artifact(my_model)
-            # Link the model to the Model Registry
-            self.wb.link_artifact(my_model, f"DAVIS Propagation/Model_arch_1")
+        model_name = f"{os.path.join(cfg.model_checkpoint_at, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
+        
+        if pl_module.current_epoch == 0:
+            pl_module.train_benchmark = []
+            pl_module.val_benchmark = []
+        else:
+            pl_module.train_benchmark = sum(pl_module.train_benchmark) / len(pl_module.train_benchmark)
+            pl_module.val_benchmark = sum(pl_module.val_benchmark) / len(pl_module.val_benchmark)
+        
+        torch.save({
+                    'cfg': self.cfg,
+                    'epoch': pl_module.current_epoch,
+                    'model_state_dict': pl_module.model.propagation_module.state_dict(),
+                    'optimizer_state_dict': pl_module.optimizers().state_dict() if type(pl_module.optimizers())!=list else {},
+                    'benchmark': [pl_module.train_benchmark, pl_module.val_benchmark],
+        }, model_name)
+        my_model = wandb.Artifact(f"model_{self.wb.id}", type="model")
+        my_model.add_file(model_name)
+        self.wb.log_artifact(my_model)
+        # Link the model to the Model Registry
+        # self.wb.link_artifact(my_model, f"DAVIS Propagation/Model_arch_1")
             
         pl_module.train_benchmark = []
         pl_module.val_benchmark = []
 
 # torch._dynamo.config.verbose=True # for debugging
 wandblogger = WandbLogger(project="DAVIS Propagation")
+wandb.run.log_code(".")
 model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
 lr_monitor = LearningRateMonitor(logging_interval='step')
 
@@ -159,15 +167,16 @@ lr_monitor = LearningRateMonitor(logging_interval='step')
 trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
-    callbacks=[model_weight_callback],
+    callbacks=[model_weight_callback, ModelSummary(max_depth=2)],
     precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
-    strategy="ddp",
-    log_every_n_steps=10,
-    check_val_every_n_epoch=20,
+    # strategy="ddp",
+    log_every_n_steps=15,
+    check_val_every_n_epoch=25,
     enable_checkpointing=False,
-    profiler='simple'
+    profiler='simple',
+    # overfit_batches=1
 )
 if trainer.global_rank == 0:
     wandblogger.experiment.config.update(config)
