@@ -18,27 +18,27 @@ torch.set_float32_matmul_precision('medium')
 
 # DAVIS
 config = {
-    "description": "Original model with more params and 16 tokens for sparse embeddings",
+    "description": "Positional embed before cross attention. No sparse embeddings. Pos embed wt has shape (256)",
     "precision": "32",
     "num_devices": 1,
-    "num_epochs": 500,
-    "save_log_weights_interval": 25,
-    "metric_train_eval_interval": 25,
+    "num_epochs": 300,
+    "save_log_weights_interval": 20,
+    "metric_train_eval_interval": 20,
     "model_checkpoint_at": "checkpoints",
     "img_size": 1024,
     "out_dir": "/",
     "focal_wt": 20,
+    "num_tokens": 1,
     "opt": {
-        "learning_rate": 3e-4, #1e-4
-        "auto_lr": True,
+        "learning_rate": 4e-4, #1e-4
+        "auto_lr": False,
         "weight_decay": 1e-4,
-        "decay_factor": 2,
-        "steps": [2000, 3000, 4500, 5500, 7000],
-        "warmup_steps": 50,
+        "decay_factor": 1/2,
+        "steps": [100, 250],
     },
     "model": {
-        "type": "vit_b",
-        "checkpoint": "sam_vit_b_01ec64.pth",
+        "type": "vit_l",
+        "checkpoint": "sam_vit_l_0b3195.pth",
         "freeze": {
             "image_encoder": True,
             "prompt_encoder": True,
@@ -47,12 +47,13 @@ config = {
     },
     "dataset": {
         "root_dir": "raw/DAVIS/",
+        "stage1": False,
         "batch_size": 4,
         "max_num_obj": 3,
         "num_frames": 3,
         "max_jump": 5,
         "num_workers": 4,
-        "pin_memory": True,
+        "pin_memory": False,
     },
 }
 cfg = OmegaConf.create(config)
@@ -158,8 +159,7 @@ class WandB_Logger(Callback):
         pl_module.val_benchmark = []
 
 # torch._dynamo.config.verbose=True # for debugging
-wandblogger = WandbLogger(project="DAVIS Propagation")
-wandb.run.log_code(".")
+wandblogger = WandbLogger(project="DAVIS Propagation", save_code=True, settings=wandb.Settings(code_dir="."))
 model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
 lr_monitor = LearningRateMonitor(logging_interval='step')
 
@@ -167,13 +167,13 @@ lr_monitor = LearningRateMonitor(logging_interval='step')
 trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
-    callbacks=[model_weight_callback, ModelSummary(max_depth=2)],
+    callbacks=[model_weight_callback, ModelSummary(max_depth=2), lr_monitor],
     precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
     # strategy="ddp",
     log_every_n_steps=15,
-    check_val_every_n_epoch=25,
+    check_val_every_n_epoch=cfg.metric_train_eval_interval,
     enable_checkpointing=False,
     profiler='simple',
     # overfit_batches=1
@@ -186,5 +186,4 @@ if trainer.global_rank == 0:
 # tuner.scale_batch_size(model, datamodule=datamodule)
 
 train_dataloader, validation_dataloader = get_loader(cfg.dataset)
-trainer.validate(model, validation_dataloader)
 trainer.fit(model, train_dataloader, validation_dataloader)

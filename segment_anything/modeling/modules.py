@@ -11,23 +11,28 @@ class PropagationModule(nn.Module):
         self.cfg = cfg
         self.max_num_obj = cfg.dataset.max_num_obj
         self.num_frames = cfg.dataset.num_frames
+        self.num_tokens = cfg.num_tokens
+
+        self.pos_embed_wt_image = nn.Parameter(torch.zeros((256)))
         
         self.attention = MemoryEfficientAttention(256, 256, 4)
-        self.dense_embedding_linear = nn.Sequential(
-            nn.Linear(256, 256),
-            nn.GELU(),
+        self.values_mlp = nn.Sequential(
+            nn.Linear(256, 256), 
+            nn.GELU(), 
             nn.Linear(256, 256)
         )
-        self.self_attention = MemoryEfficientSelfAttention(256, 256, 4)
-        self.sparse_embedding_conv = nn.Sequential(
-            nn.Conv1d(64*64, 64, kernel_size=1),
-            nn.GELU(),
-            nn.Conv1d(64, 64, kernel_size=1),
-            nn.GELU(),
-            nn.Conv1d(64, 16, kernel_size=1),
+
+        self.dense_embedding_linear = nn.Sequential(
+            nn.Linear(256, 256), 
+            nn.GELU(), 
+            nn.Linear(256, 256)
         )
 
-    def forward(self, embeddings: dict) -> torch.Tensor:
+        self.layer_norm_input = nn.LayerNorm(256)
+        self.layer_norm_values_0 = nn.LayerNorm(256)
+        self.layer_norm_values_1 = nn.LayerNorm(256)
+
+    def forward(self, embeddings: dict, pos_embed: torch.Tensor) -> torch.Tensor:
         """
         image_embeddings: (B, num_frames=3, 256, 64, 64)
         mask_embeddings: # (B, num_frames=2, P=3, 256, 64, 64)
@@ -43,12 +48,22 @@ class PropagationModule(nn.Module):
             prev_frames_embeddings = embeddings["prev_frames_embeddings"].permute(0, 1, 3, 4, 2)
         
         mask_embeddings = embeddings["mask_embeddings"].permute(0, 1, 2, 4, 5, 3) # (B, num_frames=2, num_obj=3, 64, 64, 256)
+
+        pos_embed = pos_embed.permute(0, 2, 3, 1)
+        curr_embeddings = curr_embeddings + self.pos_embed_wt_image * pos_embed
+        prev_frames_embeddings = prev_frames_embeddings + self.pos_embed_wt_image * pos_embed
+
+        curr_embeddings = self.layer_norm_input(curr_embeddings)
+        prev_frames_embeddings = self.layer_norm_input(prev_frames_embeddings)
+
         values = self.attention(curr_embeddings, prev_frames_embeddings, mask_embeddings) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
+        values = self.layer_norm_values_0(values)
+        values_shortcut = values
+        values = self.values_mlp(values)
+        values = self.layer_norm_values_1(values + values_shortcut) # (B, num_objects=3, 64, 64, 256)
         dense_embeddings = self.dense_embedding_linear(values) # (B, num_objects=3, 64, 64, 256)
-        sparse_embeddings = self.self_attention(values) # (B, num_objects=3, 64, 64, 256)
-        sparse_embeddings = sparse_embeddings.reshape(-1, 64*64, 256)
-        sparse_embeddings = self.sparse_embedding_conv(sparse_embeddings).reshape(-1, self.max_num_obj, 8, 256) # (B, num_objects=3, 8, 256)
-        return sparse_embeddings, dense_embeddings
+        sparse_embeddings = torch.empty((*dense_embeddings.shape[:2], 0, 256), device=dense_embeddings.device) # (B, num_objects=3, 1, 256)
+        return sparse_embeddings, dense_embeddings, [self.pos_embed_wt_image]
 
 class MultiheadAttention(nn.Module):
     def __init__(self, input_dim, embed_dim, num_heads):
@@ -193,7 +208,7 @@ class MemoryEfficientSelfAttention(nn.Module):
         batch_size = x.size(0)
         num_objects = x.size(1)
 
-        qkv = self.qkv_proj(x) # (B, num_objects=3, 64, 64, [embed_dim=256]*3)
+        qkv = self.qkv_proj(x) # (B, num_objects=3, SeqLen, [embed_dim=256]*3)
 
         qkv = qkv.reshape(batch_size * num_objects, -1, self.num_heads, self.head_dim*3)
         qkv = qkv.permute(0, 2, 1, 3) # [Batch, Head, SeqLen, Dims]
@@ -201,7 +216,7 @@ class MemoryEfficientSelfAttention(nn.Module):
 
         values = xops.memory_efficient_attention(q, k, v) # (B*num_obj, 64*64, num_heads, self.head_dim*3)
         values = values.permute(0, 2, 1, 3) # [Batch, SeqLen, Head, Dims]
-        values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim)
+        values = values.reshape(batch_size, num_objects, -1, self.embed_dim)
 
         values = self.o_proj(values)
         return values # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)

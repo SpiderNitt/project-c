@@ -25,7 +25,7 @@ class VOSDataset(Dataset):
     - Apply random transform to each of the frame
     - The distance between frames is controlled
     """
-    def __init__(self, im_root, gt_root, vid_list, max_jump, subset=None, num_frames=3, max_num_obj=3, val=False):
+    def __init__(self, im_root, gt_root, vid_list, max_jump, subset=None, num_frames=3, max_num_obj=3, val=False, cfg=None):
         self.im_root = im_root
         self.gt_root = gt_root
         self.max_jump = max_jump
@@ -34,6 +34,7 @@ class VOSDataset(Dataset):
         self.val = val
         self.videos = []
         self.frames = {}
+        self.cfg = cfg
 
         # Pre-filtering
         for vid in vid_list:
@@ -128,6 +129,7 @@ class VOSDataset(Dataset):
             images = []
             masks = []
             target_objects = []
+            cropped_img = []
             for f_idx in frames_idx:
                 jpg_name = frames[f_idx][:-4] + '.jpg'
                 png_name = frames[f_idx][:-4] + '.png'
@@ -151,7 +153,7 @@ class VOSDataset(Dataset):
                     reseed(pairwise_seed)
                     this_gt = self.pair_gt_dual_transform(this_gt)
 
-                cropped_img = pil_to_tensor(this_im.resize((1920, 1080), Image.NEAREST))
+                cropped_img.append(pil_to_tensor(this_im.resize((1920, 1080), Image.NEAREST)))
                 this_im = torch.as_tensor(self.resize_longest.apply_image(np.array(this_im.resize((1920, 1080), Image.NEAREST), dtype=np.uint8))).permute(2, 0, 1)
                 this_gt = np.array(this_gt.resize((1920, 1080), Image.NEAREST))
 
@@ -208,14 +210,26 @@ class VOSDataset(Dataset):
         selector = torch.BoolTensor(selector)
 
         # (H', W') -> after LongestSideResize
-        data = {
-            'image': images, # (num_frames=3, 3, H', W') 
-            'gt_mask': all_frame_gt[-1], # (num_obj=3, 1080, 1920)
-            'prev_masks': new_prev_frame_gt, # (num_frames=2, num_obj=3, 256, 256)
-            'selector': selector, # (num_obj=3) Indicates if ith object exists
-            'cropped_img': cropped_img, # (3, 1080, 1920)
-            'original_size': all_frame_gt.shape[-2:]
-        }
+        if self.cfg.stage1:
+            data = {
+                'image': images, # (num_frames=3, 3, H', W') 
+                'gt_mask': all_frame_gt[-2:], # (num_frames=2, num_obj=3, 1080, 1920)
+                'prev_masks': new_prev_frame_gt[:1], # (num_frames=1, num_obj=3, 256, 256)
+                'selector': selector, # (num_obj=3) Indicates if ith object exists
+                'cropped_img': cropped_img[-2:], # (num_frames=2, 3, 1080, 1920)
+                'original_size': all_frame_gt.shape[-2:],
+                'name': info['name']
+            }
+        else:
+            data = {
+                'image': images, # (num_frames=3, 3, H', W') 
+                'gt_mask': all_frame_gt[-1:], # (num_frames=1, num_obj=3, 1080, 1920)
+                'prev_masks': new_prev_frame_gt, # (num_frames=2, num_obj=3, 256, 256)
+                'selector': selector, # (num_obj=3) Indicates if ith object exists
+                'cropped_img': cropped_img[-1:], # (num_frames=1, 3, 1080, 1920)
+                'original_size': all_frame_gt.shape[-2:],
+                'name': info['name']
+            }
 
         return data
 
@@ -232,14 +246,15 @@ def get_loader(cfg):
                                train_list ,max_jump=cfg.max_jump, 
                                num_frames=cfg.num_frames,  
                                max_num_obj=cfg.max_num_obj, 
-                               val=False)
+                               val=False,
+                               cfg=cfg)
     train_data_loader = data.DataLoader(
         dataset=train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
         persistent_workers=True,
         num_workers=cfg.num_workers,
-        # pin_memory=cfg.pin_memory,
+        pin_memory=cfg.pin_memory,
     )
     
     with open(cfg.root_dir+'ImageSets/2017/val.txt', 'r') as file:
@@ -251,14 +266,15 @@ def get_loader(cfg):
                              val_list, max_jump=cfg.max_jump, 
                              num_frames=cfg.num_frames,  
                              max_num_obj=cfg.max_num_obj, 
-                             val=True)
+                             val=True,
+                             cfg=cfg)
     val_data_loader = data.DataLoader(
         dataset=val_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
         persistent_workers=True,
         num_workers=cfg.num_workers,
-        # pin_memory=cfg.pin_memory,
+        pin_memory=cfg.pin_memory,
     )
 
     return train_data_loader, val_data_loader
