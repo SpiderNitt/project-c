@@ -99,7 +99,7 @@ class Sam(nn.Module):
             shape PxCxHxW, where H=W=256. Can be passed as mask input
             to subsequent iterations of prediction.   
         """
-        input_images = self.preprocess(batched_input["image"])# Output -> (B, num_frames=3, 3, 1024, 1024)
+        input_images = batched_input["image"] # Output -> (B, num_frames=3, 3, 1024, 1024)
         
         '''
         To disbale grad for previous frames alone
@@ -147,8 +147,8 @@ class Sam(nn.Module):
             low_res_pred.append(low_res_masks.squeeze(1).unsqueeze(0)) # (P=3, 1, 256, 256) -> (1, P=3, 256, 256)
             masks = self.postprocess_masks(
                 low_res_masks,
-                input_size=batched_input["image"].shape[-2:],
-                original_size=(batched_input["original_size"][0][i], batched_input["original_size"][1][i])
+                input_size=list(batched_input["longest_resize_size"][i]),
+                original_size=list(batched_input["original_size"][i])
             )
             outputs_0.append(
                 {
@@ -191,8 +191,8 @@ class Sam(nn.Module):
             )
             masks = self.postprocess_masks(
                 low_res_masks,
-                input_size=batched_input["image"].shape[-2:],
-                original_size=(batched_input["original_size"][0][i], batched_input["original_size"][1][i])
+                input_size=list(batched_input["longest_resize_size"][i]),
+                original_size=list(batched_input["original_size"][i])
             )
             outputs_1.append(
                 {
@@ -236,15 +236,3 @@ class Sam(nn.Module):
             masks, original_size, mode="bilinear", align_corners=False
         )
         return masks
-
-    def preprocess(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize pixel values and pad to a square input."""
-        # Normalize colors
-        x = (x - self.pixel_mean) / self.pixel_std
-
-        # Pad
-        h, w = x.shape[-2:]
-        padh = self.image_encoder.img_size - h
-        padw = self.image_encoder.img_size - w
-        x = F.pad(x, (0, padw, 0, padh))
-        return x

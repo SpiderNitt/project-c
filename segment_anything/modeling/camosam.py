@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 import os
 import numpy as np
-from metrics import batched_jaccard, f_measure
+from metrics import jaccard_dice
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torch
 from torch import nn
@@ -45,16 +45,6 @@ class CamoSam(L.LightningModule):
         self.set_requires_grad()
 
         self.epoch_freq = self.cfg.metric_train_eval_interval
-        
-        self.train_jaccard_sep_0 = torchmetrics.JaccardIndex(task="binary")
-        self.val_jaccard_sep_0 = torchmetrics.JaccardIndex(task="binary")
-        self.train_dice_sep_0 = torchmetrics.Dice()
-        self.val_dice_sep_0 = torchmetrics.Dice()
-
-        self.train_jaccard_sep_1 = torchmetrics.JaccardIndex(task="binary")
-        self.val_jaccard_sep_1 = torchmetrics.JaccardIndex(task="binary")
-        self.train_dice_sep_1 = torchmetrics.Dice()
-        self.val_dice_sep_1 = torchmetrics.Dice()
         
         self.train_benchmark = []
         self.val_benchmark = []
@@ -107,17 +97,18 @@ class CamoSam(L.LightningModule):
         return check_idx % self.epoch_freq == 0
 
     @torch.no_grad()
-    def log_images_0(self, names, img_list, mask_list, gt_list, batch_idx, train=True):
-        for name, img, gt, pred in zip(names, img_list, gt_list, mask_list):
+    def log_images_0(self, information, img_list, mask_list, gt_list, batch_idx, train=True):
+        for info, img, gt, pred in zip(information, img_list, gt_list, mask_list):
             mask_dict = {}
             mask_dict["ground_truth"] = {"mask_data" : gt.cpu().numpy()}
             for obj_index, (pred_obj) in enumerate(pred):
                 mask_dict[f"prediction_{obj_index + 1}"] = {"mask_data" : pred_obj.cpu().numpy() * (obj_index + 1)}
-            self.logger.log_image(f"Images/{'train' if train else 'val'}/{name}", [img], step=self.global_step, masks=[mask_dict], caption=[f"Epoch_{self.current_epoch}"])
+            self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img], step=self.global_step, masks=[mask_dict], 
+                                  caption=[f"Epoch_{self.current_epoch}_Frames_{info['frames']}"])
 
     @torch.no_grad()
-    def log_images_1(self, names, img_list_0, img_list_1, mask_list_0, gt_list_0, mask_list_1, gt_list_1, batch_idx, train=True):
-        for name, img_0, img_1, gt_0, gt_1, pred_0, pred_1 in zip(names, img_list_0, img_list_1, gt_list_0, gt_list_1, mask_list_0, mask_list_1):
+    def log_images_1(self, information, img_list_0, img_list_1, mask_list_0, gt_list_0, mask_list_1, gt_list_1, batch_idx, train=True):
+        for info, img_0, img_1, gt_0, gt_1, pred_0, pred_1 in zip(information, img_list_0, img_list_1, gt_list_0, gt_list_1, mask_list_0, mask_list_1):
             mask_dict_0 = {}
             mask_dict_0["ground_truth"] = {"mask_data" : gt_0.cpu().numpy()}
             mask_dict_1 = {}
@@ -126,7 +117,8 @@ class CamoSam(L.LightningModule):
                 mask_dict_0[f"prediction_{obj_index + 1}"] = {"mask_data" : pred_obj_0.cpu().numpy() * (obj_index + 1)}
                 mask_dict_1[f"prediction_{obj_index + 1}"] = {"mask_data" : pred_obj_1.cpu().numpy() * (obj_index + 1)}
             
-            self.logger.log_image(f"Images/{'train' if train else 'val'}/{name}", [img_0, img_1], step=self.global_step, masks=[mask_dict_0, mask_dict_1], caption=[f"Epoch_{self.current_epoch}_Frame_0", f"Epoch_{self.current_epoch}_Frame_1"])
+            self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img_0, img_1], step=self.global_step, masks=[mask_dict_0, mask_dict_1],
+                                  caption=[f"Epoch_{self.current_epoch}_Frame_{info['frames'][0]}_{info['frames'][1]}", f"Epoch_{self.current_epoch}_Frame_{info['frames'][1]}_{info['frames'][2]}"])
    
     def sigmoid_focal_loss(
         self,
@@ -357,49 +349,54 @@ class CamoSam(L.LightningModule):
             sep_gt_mask_list_0 = []
             sep_gt_mask_list_1 = []
 
-            for each_output, gt_mask, cropped_img, selector in zip(output["masks_0"], batch['gt_mask'], batch['cropped_img'][0], batch['selector']):
+            jaccard_0 = 0
+            dice_0 = 0
+            jaccard_1 = 0
+            dice_1 = 0
+            total_objects = 0
+
+            for each_output, gt_mask, cropped_img, selector in zip(output["masks_0"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
+                total_objects += selector.sum()
                 gt_mask = gt_mask[0][selector]
                 sep_mask_list_0.append(each_output>0.5)
                 sep_gt_mask_list_0.append(gt_mask.type(torch.int8))
+
+                j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+                jaccard_0 += j
+                dice_0 += d
 
                 max_, max_pos = torch.max(gt_mask, dim=0)
                 gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
                 gt_mask_list_0.append(gt_mask)
                 
-                img_list_0.append(cropped_img)
+                img_list_0.append(cropped_img[0])
+            metrics_all = {'Metrics/train/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/train/dice_single_obj_0': dice_0 / total_objects}
 
             if self.cfg.dataset.stage1:
-                for each_output, gt_mask, cropped_img, selector in zip(output["masks_1"], batch['gt_mask'], batch['cropped_img'][1], batch['selector']):
+                for each_output, gt_mask, cropped_img, selector in zip(output["masks_1"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
                     gt_mask = gt_mask[1][selector]
                     sep_mask_list_1.append(each_output>0.5) # (num_true_obj, H, W)
                     sep_gt_mask_list_1.append(gt_mask.type(torch.int8)) # (num_true_obj, H, W)
+
+                    j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+                    jaccard_1 += j
+                    dice_1 += d
 
                     max_, max_pos = torch.max(gt_mask, dim=0)
                     gt_mask = ((max_pos+1) * (max_)).type(torch.int8) # (H, W)
                     gt_mask_list_1.append(gt_mask)
                     
-                    img_list_1.append(cropped_img)
+                    img_list_1.append(cropped_img[1])
 
-            metrics_all = {'Metrics/train/jaccard_single_obj_0': self.train_jaccard_sep_0, 'Metrics/train/dice_single_obj_0': self.train_dice_sep_0}
-            sep_mask_tensor_0 = torch.cat(sep_mask_list_0)
-            sep_gt_mask_tensor_0 = torch.cat(sep_gt_mask_list_0)
+                metrics_all.update({'Metrics/train/jaccard_single_obj_1': jaccard_1 / total_objects, 'Metrics/train/dice_single_obj_1': dice_1 / total_objects})
 
-            if self.cfg.dataset.stage1:
-                sep_mask_tensor_1 = torch.cat(sep_mask_list_1)
-                sep_gt_mask_tensor_1 = torch.cat(sep_gt_mask_list_1)
-                self.train_jaccard_sep_1(sep_mask_tensor_1, sep_gt_mask_tensor_1)
-                self.train_dice_sep_1(sep_mask_tensor_1, sep_gt_mask_tensor_1)
-                metrics_all.update({'Metrics/train/jaccard_single_obj_1': self.train_jaccard_sep_1, 'Metrics/train/dice_single_obj_1': self.train_dice_sep_1})
-
-            self.train_jaccard_sep_0(sep_mask_tensor_0, sep_gt_mask_tensor_0)
-            self.train_dice_sep_0(sep_mask_tensor_0, sep_gt_mask_tensor_0)
             self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
             
             if batch_idx < 5:
                 if self.cfg.dataset.stage1:
-                    self.log_images_1(batch['name'], img_list_0, img_list_1, sep_mask_list_0, gt_mask_list_0, sep_mask_list_1, gt_mask_list_1, batch_idx=batch_idx, train=True)
+                    self.log_images_1(batch['info'], img_list_0, img_list_1, sep_mask_list_0, gt_mask_list_0, sep_mask_list_1, gt_mask_list_1, batch_idx=batch_idx, train=True)
                 else:
-                    self.log_images_0(batch['name'], img_list_0, sep_mask_list_0, gt_mask_list_0, batch_idx=batch_idx, train=True)
+                    self.log_images_0(batch['info'], img_list_0, sep_mask_list_0, gt_mask_list_0, batch_idx=batch_idx, train=True)
     
     def on_validation_batch_end(self, output, batch, batch_idx):
         img_list_0 = []
@@ -411,45 +408,50 @@ class CamoSam(L.LightningModule):
         sep_gt_mask_list_0 = []
         sep_gt_mask_list_1 = []
 
-        for each_output, gt_mask, cropped_img, selector in zip(output["masks_0"], batch['gt_mask'], batch['cropped_img'][0], batch['selector']):
+        jaccard_0 = 0
+        dice_0 = 0
+        jaccard_1 = 0
+        dice_1 = 0
+        total_objects = 0
+
+        for each_output, gt_mask, cropped_img, selector in zip(output["masks_0"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
+            total_objects += selector.sum()
             gt_mask = gt_mask[0][selector]
             sep_mask_list_0.append(each_output>0.5)
             sep_gt_mask_list_0.append(gt_mask.type(torch.int8))
+
+            j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+            jaccard_0 += j
+            dice_0 += d
 
             max_, max_pos = torch.max(gt_mask, dim=0)
             gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
             gt_mask_list_0.append(gt_mask)
             
-            img_list_0.append(cropped_img)
+            img_list_0.append(cropped_img[0])
+        metrics_all = {'Metrics/val/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/val/dice_single_obj_0': dice_0 / total_objects}
 
         if self.cfg.dataset.stage1:
-            for each_output, gt_mask, cropped_img, selector in zip(output["masks_1"], batch['gt_mask'], batch['cropped_img'][1], batch['selector']):
+            for each_output, gt_mask, cropped_img, selector in zip(output["masks_1"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
                 gt_mask = gt_mask[1][selector]
                 sep_mask_list_1.append(each_output>0.5) # (num_true_obj, H, W)
                 sep_gt_mask_list_1.append(gt_mask.type(torch.int8)) # (num_true_obj, H, W)
+
+                j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+                jaccard_1 += j
+                dice_1 += d
 
                 max_, max_pos = torch.max(gt_mask, dim=0)
                 gt_mask = ((max_pos+1) * (max_)).type(torch.int8) # (H, W)
                 gt_mask_list_1.append(gt_mask)
                 
-                img_list_1.append(cropped_img)
+                img_list_1.append(cropped_img[1])
 
-        metrics_all = {'Metrics/val/jaccard_single_obj_0': self.val_jaccard_sep_0, 'Metrics/val/dice_single_obj_0': self.val_dice_sep_0}
-        sep_mask_tensor_0 = torch.cat(sep_mask_list_0)
-        sep_gt_mask_tensor_0 = torch.cat(sep_gt_mask_list_0)
+            metrics_all.update({'Metrics/val/jaccard_single_obj_1': jaccard_1 / total_objects, 'Metrics/val/dice_single_obj_1': dice_1 / total_objects})
 
-        if self.cfg.dataset.stage1:
-            sep_mask_tensor_1 = torch.cat(sep_mask_list_1)
-            sep_gt_mask_tensor_1 = torch.cat(sep_gt_mask_list_1)
-            self.val_jaccard_sep_1(sep_mask_tensor_1, sep_gt_mask_tensor_1)
-            self.val_dice_sep_1(sep_mask_tensor_1, sep_gt_mask_tensor_1)
-            metrics_all.update({'Metrics/val/jaccard_single_obj_1': self.val_jaccard_sep_1, 'Metrics/val/dice_single_obj_1': self.val_dice_sep_1})
-
-        self.val_jaccard_sep_0(sep_mask_tensor_0, sep_gt_mask_tensor_0)
-        self.val_dice_sep_0(sep_mask_tensor_0, sep_gt_mask_tensor_0)
         self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
 
         if self.cfg.dataset.stage1:
-            self.log_images_1(batch['name'], img_list_0, img_list_1, sep_mask_list_0, gt_mask_list_0, sep_mask_list_1, gt_mask_list_1, batch_idx=batch_idx, train=False)
+            self.log_images_1(batch['info'], img_list_0, img_list_1, sep_mask_list_0, gt_mask_list_0, sep_mask_list_1, gt_mask_list_1, batch_idx=batch_idx, train=False)
         else:
-            self.log_images_0(batch['name'], img_list_0, sep_mask_list_0, gt_mask_list_0, batch_idx=batch_idx, train=False)
+            self.log_images_0(batch['info'], img_list_0, sep_mask_list_0, gt_mask_list_0, batch_idx=batch_idx, train=False)

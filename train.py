@@ -11,7 +11,7 @@ from segment_anything import sam_model_registry
 from segment_anything.modeling import CamoSam
 from lightning.pytorch.utilities.rank_zero import rank_zero_only, rank_zero_warn
 
-from dataloaders.davis import get_loader, VOSDataset
+from dataloaders.vos_dataset import get_loader
 
 import os
 torch.set_float32_matmul_precision('medium')
@@ -47,7 +47,9 @@ config = {
         },
     },
     "dataset": {
-        "root_dir": "raw/DAVIS/",
+        "name": "dalp=vis",
+        "root_dir": "raw/",
+        "train_split": None, # Only for MoCA
         "stage1": False,
         "batch_size": 4,
         "max_num_obj": 3,
