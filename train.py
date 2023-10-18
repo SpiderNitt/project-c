@@ -39,10 +39,11 @@ config = {
     "model": {
         "type": "vit_l",
         "checkpoint": "sam_vit_l_0b3195.pth",
-        "freeze": {
-            "image_encoder": True,
-            "prompt_encoder": True,
-            "mask_decoder": True,
+        "requires_grad": {
+            "image_encoder": False,
+            "prompt_encoder": False,
+            "mask_decoder": False,
+            "propagation_module": True,
         },
     },
     "dataset": {
@@ -54,6 +55,7 @@ config = {
         "max_jump": 5,
         "num_workers": 4,
         "pin_memory": False,
+        "persistent_workers": True,
     },
 }
 cfg = OmegaConf.create(config)
@@ -180,10 +182,6 @@ trainer = L.Trainer(
 )
 if trainer.global_rank == 0:
     wandblogger.experiment.config.update(config)
-# tuner = Tuner(trainer)
-# tuner.lr_find(model, datamodule=datamodule)
-# #     #TODO: Add scale batch size
-# tuner.scale_batch_size(model, datamodule=datamodule)
 
 train_dataloader, validation_dataloader = get_loader(cfg.dataset)
 trainer.fit(model, train_dataloader, validation_dataloader)

@@ -37,17 +37,13 @@ class CamoSam(L.LightningModule):
         super().__init__()
         self.ckpt = ckpt
         self.model = model
+        self.cfg = config
         if ckpt is not None:
             self.model.propagation_module.load_state_dict(ckpt['model_state_dict'])
             print("Loaded checkpoint for propagation module")
 
-        for param in self.model.parameters():
-            param.requires_grad = False
+        self.set_requires_grad()
 
-        for p in self.model.propagation_module.parameters():
-            p.requires_grad = True
-    
-        self.cfg = config
         self.epoch_freq = self.cfg.metric_train_eval_interval
         
         self.train_jaccard_sep_0 = torchmetrics.JaccardIndex(task="binary")
@@ -64,6 +60,40 @@ class CamoSam(L.LightningModule):
         self.val_benchmark = []
         
         self.learning_rate = learning_rate #auto_lr_find = True
+
+    def set_requires_grad(self):
+        model_grad = self.cfg.model.requires_grad
+
+        for param in self.model.image_encoder.parameters():
+            param.requires_grad = model_grad.image_encoder
+
+        for param in self.model.prompt_encoder.parameters():
+            param.requires_grad = model_grad.prompt_encoder
+
+        for param in self.model.mask_decoder.parameters():
+            param.requires_grad = model_grad.mask_decoder
+        
+        for param in self.model.propagation_module.parameters():
+            param.requires_grad = model_grad.propagation_module
+
+    def configure_optimizers(self) -> Any:
+        print("Using Learning Rate: ", self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate, f"instead of {self.cfg.opt.learning_rate}")
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr= self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate,
+            betas=(0.9, 0.999),
+            eps=1e-08,
+            weight_decay=self.cfg.opt.weight_decay,
+            amsgrad=False,
+        )
+
+        if self.ckpt:
+            try:
+                optimizer.load_state_dict(self.ckpt['optimizer_state_dict']) # Try-except to handle the case when only propagation ckpt is to be loaded
+            except:
+                pass
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.cfg.opt.steps, gamma=self.cfg.opt.decay_factor)
+        return [optimizer], [scheduler]
 
     def forward(
         self,
@@ -181,21 +211,6 @@ class CamoSam(L.LightningModule):
         iou = (numerator + 1) / (denominator + 1)
         return iou
 
-    def configure_optimizers(self) -> Any:
-        print("Using Learning Rate: ", self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate, f"instead of {self.cfg.opt.learning_rate}")
-        optimizer = torch.optim.AdamW(
-            self.model.propagation_module.parameters(),
-            lr= self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate,
-            betas=(0.9, 0.999),
-            eps=1e-08,
-            weight_decay=self.cfg.opt.weight_decay,
-            amsgrad=False,
-        )
-        if self.ckpt:
-            optimizer.load_state_dict(self.ckpt['optimizer_state_dict'])
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.cfg.opt.steps, gamma=self.cfg.opt.decay_factor)
-        return [optimizer], [scheduler]
-
     def training_step(self, batch, batch_idx):
         output_0, output_1, prop_pos_embed = self(batch, False)
         bs = len(output_0)
@@ -257,7 +272,7 @@ class CamoSam(L.LightningModule):
         avg_iou = loss_iou / (bs * total_num_objects)
         
         self.train_benchmark.append(loss_total.item())
-        pos_embed_image_wt = prop_pos_embed
+        pos_embed_image_wt = prop_pos_embed[0]
         log_dict = {
             "Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou,
             "pos_embed_image_wt/min": pos_embed_image_wt.min(), "pos_embed_image_wt/max": pos_embed_image_wt.max(), "pos_embed_image_wt/mean": pos_embed_image_wt.mean(), "pos_embed_image_wt/std": pos_embed_image_wt.std(),

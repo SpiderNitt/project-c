@@ -252,7 +252,7 @@ def get_loader(cfg):
         dataset=train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
-        persistent_workers=True,
+        persistent_workers=cfg.persistent_workers,
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
     )
@@ -272,7 +272,7 @@ def get_loader(cfg):
         dataset=val_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        persistent_workers=True,
+        persistent_workers=cfg.persistent_workers,
         num_workers=cfg.num_workers,
         pin_memory=cfg.pin_memory,
     )
