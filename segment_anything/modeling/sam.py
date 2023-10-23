@@ -110,12 +110,13 @@ class Sam(nn.Module):
         torch.cuda.empty_cache()
         '''
         # We disable grad since we are not updating the image encoder weights
+        self.image_encoder.eval()
         with torch.no_grad():
             image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(batched_input["selector"]), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
         # torch.cuda.empty_cache()
         # image_embeddings = torch.randn(len(batched_input["selector"]), self.num_frames, 256, 64, 64).to(self.device)
 
-        pos_embed = self.prompt_encoder.get_dense_pe()
+        pos_embed = self.prompt_encoder.get_dense_pe() # (256, 64, 64)
         
         prev_masks_0 = prev_masks_1 = batched_input["prev_masks"] # (B, F=2/1, P=3, 256, 256)
         prev_masks_0 = prev_masks_0.view(-1, 1, *prev_masks_0.shape[-2:])
@@ -147,7 +148,7 @@ class Sam(nn.Module):
             low_res_pred.append(low_res_masks.squeeze(1).unsqueeze(0)) # (P=3, 1, 256, 256) -> (1, P=3, 256, 256)
             masks = self.postprocess_masks(
                 low_res_masks,
-                input_size=list(batched_input["longest_resize_size"][i]),
+                input_size=list(batched_input["resize_longest_size"][i]),
                 original_size=list(batched_input["original_size"][i])
             )
             outputs_0.append(
@@ -191,7 +192,7 @@ class Sam(nn.Module):
             )
             masks = self.postprocess_masks(
                 low_res_masks,
-                input_size=list(batched_input["longest_resize_size"][i]),
+                input_size=list(batched_input["resize_longest_size"][i]),
                 original_size=list(batched_input["original_size"][i])
             )
             outputs_1.append(
