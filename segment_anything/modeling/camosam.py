@@ -3,9 +3,10 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+import os
 import numpy as np
-from metrics import batch_measure
-
+from metrics import jaccard_dice
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -13,408 +14,433 @@ from torch.nn import functional as F
 from typing import Any, Dict, List, Optional, Tuple
 
 import lightning as L
-from torchvision.utils import make_grid
+import torchmetrics
 import wandb
 import gc
-import cv2
-import os
+
+from torchvision.transforms.functional import resize, to_pil_image  # type: ignore
 
 class CamoSam(L.LightningModule):
-	mask_threshold: float = 0.0
-	image_format: str = "RGB"
+    mask_threshold: float = 0.0
+    image_format: str = "RGB"
 
-	def __init__(
-		self,
-		config,
-		model
-	) -> None:
-		"""
-		SAM predicts object masks from an image and input prompts.
-		"""
-		super().__init__()
-		self.model = model
-  
-        #TODO Set freezing and managing adapter weights and efficient saving
-		for param in self.model.parameters():
-			param.requires_grad = False
-   
-		for param in self.model.mask_decoder.parameters():
-			param.requires_grad = True
+    def __init__(
+        self,
+        config,
+        model,
+        learning_rate = False, #auto_lr
+        ckpt = None
+    ) -> None:
+        """
+        SAM predicts object masks from an image and input prompts.
+        """
+        super().__init__()
+        self.ckpt = ckpt
+        self.model = model
+        self.cfg = config
+        if ckpt is not None:
+            self.model.propagation_module.load_state_dict(ckpt['model_state_dict'])
+            print("!!! Loaded checkpoint for propagation module !!!")
+            if ckpt['decoder_state_dict']:
+                self.model.mask_decoder.load_state_dict(ckpt['decoder_state_dict'])
+                print("!!! Loaded checkpoint for mask decoder !!!")
 
-		# for n,p in model.named_parameters():
+        self.set_requires_grad()
 
-		# 	# print(n)
-		# 	if  'initial' in n or 'adapter' in n:
-		# 	# if 'image_encoder' in n:
-		# 		# print(n)
-		# 		p.requires_grad_(True)
-		# 	else :
-		# 		p.requires_grad_(False)
-		
-		self.cfg = config
-		self.batch_freq = self.cfg.metric_train_eval_interval
-		self.train_benchmark = []
-		self.val_benchmark = []
+        for n,p in self.model.named_parameters():
+            if p.requires_grad:
+                print(n)
+                
+        self.epoch_freq = self.cfg.train_metric_interval
+        
+        self.train_benchmark = []
+        self.val_benchmark = []
+        
+        self.learning_rate = learning_rate #auto_lr_find = True
 
-	def forward(
-		self,
-		batched_input: List[Dict[str, Any]],
-		multimask_output: bool,
-	) -> List[Dict[str, torch.Tensor]]:
-		"""
-		Predicts masks end-to-end from provided images and prompts.
-		If prompts are not known in advance, using SamPredictor is
-		recommended over calling the model directly.__
+    def set_requires_grad(self):
+        model_grad = self.cfg.model.requires_grad
 
-		Arguments:
-		  batched_input (list(dict)): A list over input images, each a
-			dictionary with the following keys. A prompt key can be
-			excluded if it is not present.
-			  'image': The image as a torch tensor in 3xHxW format,
-				already transformed for input to the model.
-			  'original_size': (tuple(int, int)) The original size of
-				the image before transformation, as (H, W).
-			  'point_coords': (torch.Tensor) Batched point prompts for
-				this image, with shape BxNx2. Already transformed to the
-				input frame of the model.
-			  'point_labels': (torch.Tensor) Batched labels for point prompts,
-				with shape BxN.
-			  'boxes': (torch.Tensor) Batched box inputs, with shape Bx4.
-				Already transformed to the input frame of the model.
-			  'mask_inputs': (torch.Tensor) Batched mask inputs to the model,
-				in the form Bx1xHxW.
-		  multimask_output (bool): Whether the model should predict multiple
-			disambiguating masks, or return a single mask.
+        for name,param in self.model.image_encoder.named_parameters():
+            if 'inital' in name or 'adapter' in name:
+                param.requires_grad = True
+            
+            else:
+                param.requires_grad = model_grad.image_encoder
 
-		Returns:
-		  (list(dict)): A list over input images, where each element is
-			as dictionary with the following keys.
-			  'masks': (torch.Tensor) Batched binary mask predictions,
-				with shape BxCxHxW, where B is the number of input prompts,
-				C is determined by multimask_output, and (H, W) is the
-				original size of the image.
-			  'iou_predictions': (torch.Tensor) The model's predictions
-				of mask quality, in shape BxC.
-			  'low_res_logits': (torch.Tensor) Low resolution logits with
-				shape BxCxHxW, where H=W=256. Can be passed as mask input
-				to subsequent iterations of prediction.
-		"""
-		return self.model(batched_input, multimask_output)
-	
-	def check_frequency(self, check_idx):
-		return check_idx % self.batch_freq == 0
+        for param in self.model.prompt_encoder.parameters():
+            param.requires_grad = model_grad.prompt_encoder
 
-	@torch.no_grad()
-	def log_pr_metrics(self,metric, batch_idx, train=True):
-		for metric_ in ["Fmeasure_all_thresholds", "Precision", "Recall"]:
-			data = metric[metric_]
-			data = [[i,j] for i,j in zip(np.linspace(0,1,data.shape[0]), data)]
-			table = wandb.Table(data=data, columns = ["Threshold", metric_])
-			if train:
-				wandb.log({f"PR_curve/Epoch:{self.current_epoch}/{batch_idx}_Train: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
-			else:
-				wandb.log({f"PR_curve/Epoch:{self.current_epoch}/{batch_idx}_Validation: {metric_} vs Threshold Line Plot" : wandb.plot.line(table, "Threshold", metric_, title=f"{metric_} vs Threshold Line Plot")})
+        for param in self.model.mask_decoder.parameters():
+            param.requires_grad = model_grad.mask_decoder
+        
+        # for param in self.model.propagation_module.parameters():
+        #     param.requires_grad = model_grad.propagation_module
 
-	
-	@torch.no_grad()
-	def log_images(self,img_list, mask_list, gt_list, prompt_point, prompt_mask, batch_idx, train=True):
+    def configure_optimizers(self) -> Any:
+        print("Using Learning Rate: ", self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate, f"instead of {self.cfg.opt.learning_rate}")
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr= self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate,
+            betas=(0.9, 0.999),
+            eps=1e-08,
+            weight_decay=self.cfg.opt.weight_decay,
+            amsgrad=False,
+        )
 
-		# num_maks = gt_list[0].shape[0]
-		# gt_grid = make_grid(torch.cat(gt_list, dim=0), n_row=len(gt_list))
-		# mask_grid = make_grid(torch.cat(mask_list, dim=0), nrow=len(mask_list))
-		# self.log_dict({"images" : wandb.Image(make_grid(img_list)), "gt_mask" : wandb.Image(gt_grid), "masks" : wandb.Image(mask_grid)})
-		
-		prompt_mask = prompt_mask*255
-		table = wandb.Table(columns=['ID', 'Image'])
+        if self.ckpt and self.cfg.opt.learning_rate is None:
+            try:
+                optimizer.load_state_dict(self.ckpt['optimizer_state_dict']) # Try-except to handle the case when only propagation ckpt is to be loaded
+            except:
+                pass
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.cfg.opt.steps, gamma=self.cfg.opt.decay_factor)
+        return [optimizer], [scheduler]
 
-		for id, (img, gt, pred, point, mask) in enumerate(zip(img_list, gt_list, mask_list, prompt_point, prompt_mask)):
-      
-			
-			gt[gt!=0] = 255
-			pred[pred!=0] = 200
-   
-			log_masks = {
-				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}, 
-			}
-
-			if mask is not None:
-				mask[mask!=0] = 150
-				log_masks["mask prompt"] : {"mask_data" : mask}
-
-			if point is not None:
-				point_as_mask = np.zeros((pred.shape))
-				for coords in point:
-					point_as_mask = cv2.circle(point_as_mask, coords, radius=10, color=100, thickness=-1)
-
-				point_as_mask[point_as_mask!=0] = 100
-				log_masks["point prompt"] = {"mask_data": point_as_mask}
-   
-			mask_img = wandb.Image(img, masks=log_masks)
-			table.add_data(id, mask_img)
-
-		if train:
-			wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Train" : table})
-		else:
-			wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Validation" : table})
-
-	def sigmoid_focal_loss(
-		self,
-		inputs: torch.Tensor,
-		targets: torch.Tensor,
-		alpha: float = 0.25, # optimal based on https://arxiv.org/pdf/1708.02002.pdf
-		gamma: float = 2,
-		reduction: str = "none",
-	) -> torch.Tensor:
-		"""
-		Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
-
-		Args:
-			inputs (Tensor): A float tensor of arbitrary shape.
-					The predictions for each example.
-			targets (Tensor): A float tensor with the same shape as inputs. Stores the binary
-					classification label for each element in inputs
-					(0 for the negative class and 1 for the positive class).
-			alpha (float): Weighting factor in range (0,1) to balance
-					positive vs negative examples or -1 for ignore. Default: ``0.25``.
-			gamma (float): Exponent of the modulating factor (1 - p_t) to
-					balance easy vs hard examples. Default: ``2``.
-			reduction (string): ``'none'`` | ``'mean'`` | ``'sum'``
-					``'none'``: No reduction will be applied to the output.
-					``'mean'``: The output will be averaged.
-					``'sum'``: The output will be summed. Default: ``'none'``.
-		Returns:
-			Loss tensor with the reduction option applied.
-		"""
-		# Original implementation from https://github.com/facebookresearch/fvcore/blob/master/fvcore/nn/focal_loss.py
-
-		p = torch.sigmoid(inputs)
-		ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-		p_t = p * targets + (1 - p) * (1 - targets)
-		loss = ce_loss * ((1 - p_t) ** gamma) # [1, H, W]
-		if alpha >= 0:
-			alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-			loss = alpha_t * loss
-
-		# Check reduction option and return loss accordingly
-		if reduction == "none":
-			pass
-		elif reduction == "mean":
-			loss = loss.mean()
-		elif reduction == "sum":
-			loss = loss.sum()
-		else:
-			raise ValueError(
-				f"Invalid Value for arg 'reduction': '{reduction} \n Supported reduction modes: 'none', 'mean', 'sum'"
-			)
-		return loss
-
-	def dice_loss(self, inputs, targets):
-		"""
-		Compute the DICE loss, similar to generalized IOU for masks
-		Args:
-			inputs: A float tensor of arbitrary shape.
-					The predictions for each example.
-			targets: A float tensor with the same shape as inputs. Stores the binary
-					classification label for each element in inputs
-					(0 for the negative class and 1 for the positive class).
-		"""
-		# 2ypˆ+ 1 /(y + ˆp + 1)
-  
-		inputs = inputs.sigmoid()
-		inputs = inputs.flatten(1)	 # [1, HxW]
-		targets = targets.flatten(1) # [1, HxW]
-		numerator = 2 * (inputs * targets).sum(1)
-		denominator = inputs.sum(-1) + targets.sum(-1) 
-		loss = 1 - (numerator + 1) / (denominator + 1)
-		return loss.mean()
-
-	def lr_lambda(self, step):
-		if step < self.cfg.opt.warmup_steps:
-			return step / self.cfg.opt.warmup_steps
-		elif step < self.cfg.opt.steps[0]:
-			return 1.0
-		elif step < self.cfg.opt.steps[1]:
-			return 1 / self.cfg.opt.decay_factor
-		else:
-			return 1 / (self.cfg.opt.decay_factor**2)
-
-	def configure_optimizers(self) -> Any:
-		optimizer = torch.optim.AdamW(
-			self.parameters(),
-			lr=self.cfg.opt.learning_rate,
-			betas=(0.9, 0.999),
-			eps=1e-08,
-			weight_decay=self.cfg.opt.weight_decay,
-			amsgrad=False,
-		)
-		# scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, self.lr_lambda)
-		return [optimizer] #, [scheduler]
-
-	def on_validation_epoch_end(self):
-		#TODO Partially save models
-		# weights = os.listdir("checkpoint/")
-		# last_weight = 
-		avg_val = {i:0 for i in list(self.val_benchmark[0].keys()) }
-
-		for avg in self.val_benchmark:
-			for key in avg:
-				avg_val[key] += avg[key]
+    def forward(
+        self,
+        batched_input: List[Dict[str, Any]],
+        multimask_output: bool,
+    ) -> List[Dict[str, torch.Tensor]]:
+        
+        return self.model(batched_input, multimask_output)
     
-		avg_val = {i+"_Epoch":avg_val[i]/len(self.val_benchmark) for i in avg_val}
-	
-		self.log_dict(avg_val, on_epoch=True, prog_bar=True)
-		self.val_benchmark = []  
+    def check_frequency(self, check_idx):
+        return check_idx % self.epoch_freq == 0
 
-  
-		if (self.current_epoch-1) % self.cfg.save_log_weights_interval == 0:
-			# 0/0
-			print("CHECK POINT WEIGHT OF IS AVAILABLE:", self.current_epoch)
-			import time
-			time.sleep(5)
-			# wandb.save
-			pass
-			
+    @torch.no_grad()
+    def log_images_0(self, information, img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, iou_list_0, batch_idx, train=True):
+        for info, img, sep_mask, mask, gt, iou in zip(information, img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, iou_list_0):
+            mask_dict = {}
+            mask_dict["ground_truth"] = {"mask_data" : gt.cpu().numpy()}
+            mask_dict["prediction"] = {"mask_data" : mask.cpu().numpy()}
+            for obj_index, (pred_obj, iou_obj) in enumerate(zip(sep_mask, iou)):
+                mask_dict[f"prediction_{obj_index + 1}"] = {"mask_data" : pred_obj.cpu().numpy() * (obj_index + 1)}
+            self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img], step=self.global_step, masks=[mask_dict], 
+                                  caption=[f"Epoch_{self.current_epoch}_IoU_{iou_obj.cpu().item(): 0.3f}_Frames_{info['frames']}"])
+
+    # @torch.no_grad()
+    # def log_images_1(self, information, img_list_0, img_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, gt_mask_list_0, gt_mask_list_1, iou_list_0, iou_list_1, batch_idx, train=True):
+    #     for info, img_0, img_1, gt_0, gt_1, sep_mask_0, sep_mask_1, mask_0, mask_1, iou_0, iou_1 in zip(information, img_list_0, img_list_1, gt_mask_list_0, gt_mask_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, iou_list_0, iou_list_1):
+    #         mask_dict_0 = {}
+    #         mask_dict_0["ground_truth"] = {"mask_data" : gt_0.cpu().numpy()}
+    #         mask_dict_0["prediction"] = {"mask_data" : mask_0.cpu().numpy()}
+    #         mask_dict_1 = {}
+    #         mask_dict_1["ground_truth"] = {"mask_data" : gt_1.cpu().numpy()}
+    #         mask_dict_1["prediction"] = {"mask_data" : mask_1.cpu().numpy()}
+    #         for obj_index, (sep_obj_0, sep_obj_1, iou_obj_0, iou_obj_1) in enumerate(zip(sep_mask_0, sep_mask_1, iou_0, iou_1)):
+    #             mask_dict_0[f"prediction_{obj_index + 1}"] = {"mask_data" : sep_obj_0.cpu().numpy() * (obj_index + 1)}
+    #             mask_dict_1[f"prediction_{obj_index + 1}"] = {"mask_data" : sep_obj_1.cpu().numpy() * (obj_index + 1)}
+            
+    #         self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img_0, img_1], step=self.global_step, masks=[mask_dict_0, mask_dict_1],
+    #                               caption=[f"Epoch_{self.current_epoch}_IoU_{iou_obj_0.cpu().item(): 0.3f}_Frame_{info['frames'][0]}_{info['frames'][1]}", f"Epoch_{self.current_epoch}_IoU_{iou_obj_1.cpu().item(): 0.3f}_Frame_{info['frames'][1]}_{info['frames'][2]}"])
    
-	def on_train_epoch_end(self):
-		#TODO Partially save models
-		# weights = os.listdir("checkpoint/")
-		# last_weight = 
-		avg_train = {i:0 for i in list(self.train_benchmark[0].keys()) }
+    def sigmoid_focal_loss(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        p: torch.Tensor,
+        alpha: float = 0.25, # optimal based on https://arxiv.org/pdf/1708.02002.pdf
+        gamma: float = 2,
+    ) -> torch.Tensor:
+        """
+        Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
 
-		for avg in self.train_benchmark:
-			for key in avg:
-				avg_train[key] += avg[key]
+        Args:
+            inputs (Tensor): A float tensor of arbitrary shape.
+                    The predictions for each example.
+            targets (Tensor): A float tensor with the same shape as inputs. Stores the binary
+                    classification label for each element in inputs
+                    (0 for the negative class and 1 for the positive class).
+            alpha (float): Weighting factor in range (0,1) to balance
+                    positive vs negative examples or -1 for ignore. Default: ``0.25``.
+            gamma (float): Exponent of the modulating factor (1 - p_t) to
+                    balance easy vs hard examples. Default: ``2``.
+            reduction (string): ``'none'`` | ``'mean'`` | ``'sum'``
+                    ``'none'``: No reduction will be applied to the output.
+                    ``'mean'``: The output will be averaged.
+                    ``'sum'``: The output will be summed. Default: ``'none'``.
+        Returns:
+            Loss tensor with the reduction option applied.
+        """
+        # Original implementation from https://github.com/facebookresearch/fvcore/blob/master/fvcore/nn/focal_loss.py
+
+        # p = torch.sigmoid(inputs)
+        inputs = inputs.flatten(1)	 # [num_true_obj, HxW]
+        targets = targets.flatten(1) # [num_true_obj, HxW]
+        p = p.flatten(1) # [num_true_obj, HxW]
+        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+        p_t = p * targets + (1 - p) * (1 - targets)
+        loss = ce_loss * ((1 - p_t) ** gamma) # [1, H, W]
+        if alpha >= 0:
+            alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+            loss = alpha_t * loss
+
+        return loss.mean(dim=1).sum()
+
+    def dice_loss(self, inputs, targets):
+        """
+        Compute the DICE loss, similar to generalized IOU for masks
+        Args:
+            inputs: A float tensor of arbitrary shape.
+                    The predictions for each example.
+            targets: A float tensor with the same shape as inputs. Stores the binary
+                    classification label for each element in inputs
+                    (0 for the negative class and 1 for the positive class).
+        """
+        # 2ypˆ+ 1 /(y + ˆp + 1)
+  
+        # inputs = inputs.sigmoid()
+        inputs = inputs.flatten(1)	 # [num_true_obj, HxW]
+        targets = targets.flatten(1) # [num_true_obj, HxW]
+        numerator = 2 * (inputs * targets).sum(-1)
+        denominator = inputs.sum(-1) + targets.sum(-1)
+        loss = 1 - (numerator + 1) / (denominator + 1)
+        return loss.sum()
     
-		avg_train = {i+"_Epoch":avg_train[i]/len(self.train_benchmark) for i in avg_train}
-	
-		self.log_dict(avg_train, on_epoch=True, prog_bar=True)
-		self.train_benchmark = []
-
-	def training_step(self, batch, batch_idx):
-		bs = len(batch)
-		output = self(batch, False)
-		loss_focal = 0
-		loss_dice = 0
-		loss_iou = 0
-
-		img_list = []
-		mask_list = []
-		gt_mask_list = []
+    def iou(self, inputs, targets):
+        """
+        Compute the IOU
+        Args:
+            inputs: A float tensor of arbitrary shape.
+                    The predictions for each example.
+            targets: A float tensor with the same shape as inputs. Stores the binary
+                    classification label for each element in inputs
+                    (0 for the negative class and 1 for the positive class).
+        """
+        # ypˆ+ 1 /(y + ˆp - ypˆ+ 1)
   
-		prompt_point = []
-		prompt_mask = []
+        # inputs = inputs.sigmoid()
+        inputs = inputs.flatten(1)	 # [num_true_obj, HxW]
+        targets = targets.flatten(1) # [num_true_obj, HxW]
+        numerator = (inputs * targets).sum(-1)
+        denominator = inputs.sum(-1) + targets.sum(-1) - numerator
+        iou = (numerator + 1) / (denominator + 1)
+        return iou
 
-		for each_output, image_record in zip(output, batch):
-			# compute batch_iou of pred_mask and gt_mask
-			# H,W varies based on video
-			# each_output - [1, 1, 720, 1280] (no.of prompts x multimask = 1 x H x W) image_record - [720, 1280] each_output["iou_predictions"] - [1,1]
-			
-			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1]) #[1, 720, 1280]
-			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
-   
-			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
-			img_list.append((image_record['image'].cpu().permute(1, 2, 0).numpy()))
-			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
-			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
-   
-			prompt_point.append(image_record['point_coords'])
-			prompt_mask.append(image_record['mask_input'])
-			
-			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
-			union = torch.sum(pred_masks, dim=(-1, -2))
-			epsilon = 1e-7
+    def training_step(self, batch, batch_idx):
+        output = self(batch, False)
+        bs = len(output)
+        loss_focal = 0
+        loss_dice = 0
+        loss_iou = 0
 
-			batch_iou = (intersection / (union + epsilon))
-			loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, reduction="mean")
-			loss_dice += self.dice_loss(pred_masks, gt_mask)
-			loss_iou += F.mse_loss(
-				each_output["iou_predictions"].reshape(-1), batch_iou, reduction="mean"
-			)
+        # output: 
+        # "masks": masks, # (P=3, H, W)
+        # "iou_predictions": iou_predictions, # (P=3, 1)
+        # "low_res_logits": low_res_masks, # (P=3, 1, 256, 256)
+        
+        # batch:
+        # "gt_mask": gt_mask, # (B, P, H, W) P = 3
+        # "selector": selector, # (B, P) P = 3
+        # "cropped_img": cropped_img, # (B, 3, H, W)
 
-		# Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
-		loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
-		avg_focal = loss_focal.item() / bs
-		avg_dice = loss_dice.item() / bs
-		avg_iou = loss_iou.item() / bs
+        pred_masks_list = []
+        iou_pred_list = []
+        total_num_objects = 1
 
-		metrics = {}
-		if self.check_frequency(batch_idx):
-			metrics = batch_measure(gt_mask_list, mask_list, measures=self.cfg.log_metrics)
-			self.log_pr_metrics(metrics, batch_idx=batch_idx,train=True)
-			self.log_images(img_list, mask_list, gt_mask_list, prompt_point, prompt_mask, batch_idx=batch_idx, train=True)
-			metrics = {'Metric/train_'+i:metrics[i] for i in metrics}
-			del metrics["Metric/train_Fmeasure_all_thresholds"], metrics["Metric/train_Precision"], metrics["Metric/train_Recall"]
-		
-		# del img_list, mask_list, gt_mask_list
-		gc.collect()
-		self.train_benchmark.append({"Loss/train_total_loss" : loss_total, "Loss/train_focal_loss" : avg_focal, "Loss/train_dice_loss" : avg_dice, "Loss/train_iou_loss" : avg_iou} | metrics)
+        for each_output, gt_mask, selector in zip(output, batch['gt_mask'] ):
+            print(batch['gt_mask'].shape)
+            # total_num_objects += selector.sum()
+            print(pred_masks.shape)
+            pred_masks = each_output["masks"] # [1, H, W]
+            # pred_masks_list.append(pred_masks.detach())
+            # pred_masks = pred_masks[selector] # [num_true_obj, H, W]
+            gt_mask = gt_mask # [num_obj, H, W] # gt_mask[0] to get the 0th mask from the prediction
+                        
+            pred_masks_sigmoid = torch.sigmoid(pred_masks)
+            pred_masks_list.append(pred_masks_sigmoid.detach())
+            iou_pred_list.append(each_output["iou_predictions"].reshape(-1).detach())
+            
+            loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
+            loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)
+            loss_iou += F.mse_loss(
+                each_output["iou_predictions"].reshape(-1), self.iou(pred_masks_sigmoid, gt_mask), reduction="sum"
+            )
 
-		self.log_dict(self.train_benchmark[-1], on_step=True, on_epoch=True, prog_bar=True)
+        # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
+        loss_total = (self.cfg.focal_wt * loss_focal + loss_dice + loss_iou) / (total_num_objects)
+        avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
+        avg_dice = loss_dice / (total_num_objects)
+        avg_iou = loss_iou / (total_num_objects)
+        
+        self.train_benchmark.append(loss_total.item())
+        # pos_embed_attn_wt, pos_embed_affinity_wt = prop_pos_embed
+        log_dict = {
+            "Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou,
+        }
 
-		return loss_total
-	
-	def validation_step(self, batch, batch_idx):
-		bs = len(batch)
-		output = self(batch, False)
-		loss_focal = 0
-		loss_dice = 0
-		loss_iou = 0
+        self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
 
-		img_list = []
-		mask_list = []
-		gt_mask_list = []
-  
-		prompt_point = []
-		prompt_mask = []
-  
-		for each_output, image_record in zip(output, batch):
-			# compute batch_iou of pred_mask and gt_mask
-			# H,W varies based on video
-			# each_output - [1, 1, 720, 1280] (no.of prompts x multimask = 1 x H x W) image_record - [720, 1280] each_output["iou_predictions"] - [1,1]
-			
-   
-			pred_masks = each_output["masks"].reshape(-1, each_output["masks"].shape[-2], each_output["masks"].shape[-1]) #[1, 720, 1280]
-			gt_mask = image_record['gt_mask'].reshape(-1, image_record['gt_mask'].shape[-2], image_record['gt_mask'].shape[-1]) #[1, 720, 1280]
-			
-			mask_list.append((pred_masks.cpu().detach().numpy()[0]*255).astype(np.uint8))
-			img_list.append(image_record['image'].cpu().permute(1, 2, 0).numpy())
-			img_list[-1] = cv2.resize(img_list[-1], tuple(gt_mask.shape[1:][::-1]))
-			gt_mask_list.append((gt_mask.cpu().numpy()[0]*255).astype(np.uint8))
-			
-			prompt_point.append(image_record['point_coords'])
-			prompt_mask.append(image_record['mask_input'])
-			
-			
-			intersection = torch.sum(torch.mul(pred_masks, gt_mask), dim=(-1, -2))
-			union = torch.sum(pred_masks, dim=(-1, -2))
-			epsilon = 1e-7
+        return {'loss': loss_total, 'masks': pred_masks_list,  'iou': iou_pred_list} # List([num_true_obj, H, W])
+    
+    def validation_step(self, batch, batch_idx):
+        output_0, output_1, _ = self(batch, False)
+        bs = len(output_0)
+        loss_focal = 0
+        loss_dice = 0
+        loss_iou = 0
 
-			batch_iou = (intersection / (union + epsilon))
-			loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, reduction="mean")
-			loss_dice += self.dice_loss(pred_masks, gt_mask)
-			loss_iou += F.mse_loss(
-				each_output["iou_predictions"].reshape(-1), batch_iou, reduction="mean"
-			)
+        # output: 
+        # "masks": masks, # (P=3, H, W)
+        # "iou_predictions": iou_predictions, # (P=3, 1)
+        # "low_res_logits": low_res_masks, # (P=3, 1, 256, 256)
+        
+        # batch:
+        # "gt_mask": gt_mask, # (B, P, H, W) P = 3
+        # "selector": selector, # (B, P) P = 3
+        # "cropped_img": cropped_img, # (B, 3, H, W)
 
-		# Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
-		loss_total = (20.0 * loss_focal + loss_dice + loss_iou) / bs
-		avg_focal = loss_focal.item() / bs
-		avg_dice = loss_dice.item() / bs
-		avg_iou = loss_iou.item() / bs
+        pred_masks_list = []
+        iou_pred_list = []
+        total_num_objects = 1
 
-		metrics = {}
-		if self.check_frequency(batch_idx):
-			self.log_images(img_list, mask_list, gt_mask_list, prompt_point, prompt_mask, batch_idx=batch_idx, train=False)
-			metrics = batch_measure(gt_mask_list, mask_list, measures=self.cfg.log_metrics)
-			self.log_pr_metrics(metrics, batch_idx=batch_idx,train=False)
-			
-			metrics = {'Metric/validation_'+i:metrics[i] for i in metrics}
-			del metrics["Metric/validation_Fmeasure_all_thresholds"], metrics["Metric/validation_Precision"], metrics["Metric/validation_Recall"]
-		
-		del img_list, mask_list, gt_mask_list
-		gc.collect()
+        for each_output, gt_mask, selector in zip(output, batch['gt_mask'] ):
+            print(batch['gt_mask'].shape)
+            # total_num_objects += selector.sum()
+            print(pred_masks.shape)
+            pred_masks = each_output["masks"] # [1, H, W]
+            # pred_masks_list.append(pred_masks.detach())
+            # pred_masks = pred_masks[selector] # [num_true_obj, H, W]
+            gt_mask = gt_mask # [num_obj, H, W] # gt_mask[0] to get the 0th mask from the prediction
+                        
+            pred_masks_sigmoid = torch.sigmoid(pred_masks)
+            pred_masks_list.append(pred_masks_sigmoid.detach())
+            iou_pred_list.append(each_output["iou_predictions"].reshape(-1).detach())
+            
+            loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
+            loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)
+            loss_iou += F.mse_loss(
+                each_output["iou_predictions"].reshape(-1), self.iou(pred_masks_sigmoid, gt_mask), reduction="sum"
+            )
 
-		self.val_benchmark.append({"Loss/validation_total_loss" : loss_total, "Loss/validation_focal_loss" : avg_focal, "Loss/validation_dice_loss" : avg_dice, "Loss/validation_iou_loss" : avg_iou} | metrics)
-		self.log_dict(self.val_benchmark[-1], on_step=True, on_epoch=True, prog_bar=True)
+        # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
+        loss_total = (self.cfg.focal_wt * loss_focal + loss_dice + loss_iou) / (total_num_objects)
+        avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
+        avg_dice = loss_dice / (total_num_objects)
+        avg_iou = loss_iou / (total_num_objects)
 
-		return loss_total
+        # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
+        loss_total = (self.cfg.focal_wt * loss_focal + loss_dice + loss_iou) / (total_num_objects)
+        avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
+        avg_dice = loss_dice / (total_num_objects)
+        avg_iou = loss_iou / (total_num_objects)
+
+        self.val_benchmark.append(loss_total.item())
+        self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
+
+        return {'loss': loss_total, 'masks': pred_masks_list, 'iou': iou_pred_list} # List([num_true_obj, H, W])
+    
+    def on_train_batch_end(self, output, batch, batch_idx):
+        if self.check_frequency(self.current_epoch):
+            img_list_0 = []
+            # img_list_1 = []
+            sep_mask_list_0 = []
+            # sep_mask_list_1 = []
+            mask_list_0 = []
+            # mask_list_1 = []
+            gt_mask_list_0 = []
+            # gt_mask_list_1 = []
+            sep_gt_mask_list_0 = []
+            # sep_gt_mask_list_1 = []
+
+            jaccard_0 = 0
+            dice_0 = 0
+            # jaccard_1 = 0
+            # dice_1 = 0
+            total_objects = 1
+
+            for each_output, gt_mask, cropped_img, selector in zip(output["masks"], batch['gt_mask'], batch['cropped_img']):
+                # total_objects += selector.sum()
+                gt_mask = gt_mask[0][selector]
+                sep_mask_list_0.append(each_output>0.5)
+                sep_gt_mask_list_0.append(gt_mask.type(torch.int8))
+
+                j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+                jaccard_0 += j
+                dice_0 += d
+
+                max_, max_pos = torch.max(gt_mask, dim=0)
+                gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
+                gt_mask_list_0.append(gt_mask)
+
+                max_, max_pos = torch.max(each_output, dim=0)
+                mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
+                mask_list_0.append(mask)
+                
+                img_list_0.append(cropped_img[0])
+                metrics_all = {'Metrics/train/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/train/dice_single_obj_0': dice_0 / total_objects}
+
+                metrics_all.update({'Metrics/train/jaccard_single_obj_1': jaccard_1 / total_objects, 'Metrics/train/dice_single_obj_1': dice_1 / total_objects})
+
+            self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+            
+            if batch_idx < 5:
+                    self.log_images_0(batch['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=True)
+    
+    def on_validation_batch_end(self, output, batch, batch_idx):
+        img_list_0 = []
+        # img_list_1 = []
+        sep_mask_list_0 = []
+        # sep_mask_list_1 = []
+        mask_list_0 = []
+        # mask_list_1 = []
+        gt_mask_list_0 = []
+        # gt_mask_list_1 = []
+        sep_gt_mask_list_0 = []
+        # sep_gt_mask_list_1 = []
+
+        jaccard_0 = 0
+        dice_0 = 0
+        jaccard_1 = 0
+        dice_1 = 0
+        total_objects = 1
+
+        for each_output, gt_mask, cropped_img, selector in zip(output["masks_0"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
+            # total_objects += selector.sum()
+            gt_mask = gt_mask[0]
+            sep_mask_list_0.append(each_output>0.5)
+            sep_gt_mask_list_0.append(gt_mask.type(torch.int8))
+
+            j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+            jaccard_0 += j
+            dice_0 += d
+
+            max_, max_pos = torch.max(gt_mask, dim=0)
+            gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
+            gt_mask_list_0.append(gt_mask)
+            
+            max_, max_pos = torch.max(each_output, dim=0)
+            mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
+            mask_list_0.append(mask)
+
+            img_list_0.append(cropped_img[0])
+        metrics_all = {'Metrics/val/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/val/dice_single_obj_0': dice_0 / total_objects}
+
+        # if self.cfg.dataset.stage1:
+        #     for each_output, gt_mask, cropped_img, selector in zip(output["masks_1"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
+        #         gt_mask = gt_mask[1][selector]
+        #         sep_mask_list_1.append(each_output>0.5) # (num_true_obj, H, W)
+        #         sep_gt_mask_list_1.append(gt_mask.type(torch.int8)) # (num_true_obj, H, W)
+
+        #         j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+        #         jaccard_1 += j
+        #         dice_1 += d
+
+        #         max_, max_pos = torch.max(gt_mask, dim=0)
+        #         gt_mask = ((max_pos+1) * (max_)).type(torch.int8) # (H, W)
+        #         gt_mask_list_1.append(gt_mask)
+                
+        #         max_, max_pos = torch.max(each_output, dim=0)
+        #         mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
+        #         mask_list_1.append(mask)
+
+        #         img_list_1.append(cropped_img[1])
+
+        #     metrics_all.update({'Metrics/val/jaccard_single_obj_1': jaccard_1 / total_objects, 'Metrics/val/dice_single_obj_1': dice_1 / total_objects})
+
+        self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+
+        # if self.cfg.dataset.stage1:
+        #     self.log_images_1(batch['info'], img_list_0, img_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, gt_mask_list_0, gt_mask_list_1, output['iou_0'], output['iou_1'], batch_idx=batch_idx, train=False)
+        # else:
+        self.log_images_0(batch['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou_0'], batch_idx=batch_idx, train=False)
