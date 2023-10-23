@@ -412,7 +412,7 @@ class VideoDataset(data.Dataset):
                         label_prompt = np.asarray([1])
                         # print(point_prompt)
 
-                    all_point_prompt.append(torch.as_tensor(point_prompt, dtype=torch.float))
+                    all_point_prompt.append(torch.as_tensor(self.transform.apply_coords(point_prompt,  all_gt_copy[0].shape), dtype=torch.float))
                     all_label_prompt.append(torch.as_tensor(label_prompt, dtype=torch.int))
 
             if ((point_prompt is None) and is_point_prompt) or ((mask_prompt is None) and is_mask_prompt):
