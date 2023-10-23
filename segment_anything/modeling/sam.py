@@ -4,8 +4,6 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import cv2
-import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -15,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 from .image_encoder import ImageEncoderViT
 from .mask_decoder import MaskDecoder
 from .prompt_encoder import PromptEncoder
-from ..utils.transforms import ResizeLongestSide
+
 
 class Sam(nn.Module):
     mask_threshold: float = 0.0
@@ -49,12 +47,12 @@ class Sam(nn.Module):
         self.mask_decoder = mask_decoder
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
-        self.transform = ResizeLongestSide(self.image_encoder.img_size)
 
     @property
     def device(self) -> Any:
         return self.pixel_mean.device
 
+    @torch.no_grad()
     def forward(
         self,
         batched_input: List[Dict[str, Any]],
@@ -100,40 +98,18 @@ class Sam(nn.Module):
         """
         input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
         image_embeddings = self.image_encoder(input_images)
-        device = image_embeddings.device
+
         outputs = []
         for image_record, curr_embedding in zip(batched_input, image_embeddings):
-            points = None
-            mask_input_torch = None
-            
-            point_coords = image_record["point_coords"]
-            point_labels = image_record["point_labels"]
-            mask_input = image_record["mask_input"]
-            
-            if point_coords is not None:
-                assert (
-                    point_labels is not None
-                ), "point_labels must be supplied if point_coords is supplied."
-                point_coords = self.transform.apply_coords(point_coords, image_record["original_size"])
-                coords_torch = torch.as_tensor(point_coords, dtype=torch.float, device=device)
-                labels_torch = torch.as_tensor(point_labels, dtype=torch.int, device=device)
-                coords_torch, labels_torch = coords_torch[None, :, :], labels_torch[None, :]
-                
-                points = (coords_torch, labels_torch)
-                
-            if mask_input is not None:
-                mask_input = np.expand_dims(cv2.resize(mask_input.astype(np.uint8), (256,256)), 0)
-                mask_input_torch = torch.as_tensor(mask_input, dtype=torch.float, device=device)
-                mask_input_torch = mask_input_torch[None, :, :, :]            
-            
-            
+            if "point_coords" in image_record:
+                points = (image_record["point_coords"], image_record["point_labels"])
+            else:
+                points = None
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 points=points,
-                boxes=None,
-                masks=mask_input_torch, #(1, 1, 256, 256)
+                boxes=image_record.get("boxes", None),
+                masks=image_record.get("mask_inputs", None),
             )
-            
-
             low_res_masks, iou_predictions = self.mask_decoder(
                 image_embeddings=curr_embedding.unsqueeze(0),
                 image_pe=self.prompt_encoder.get_dense_pe(),
@@ -146,7 +122,7 @@ class Sam(nn.Module):
                 input_size=image_record["image"].shape[-2:],
                 original_size=image_record["original_size"],
             )
-            masks = (masks > self.mask_threshold).float() # 0 or 1
+            # masks = masks > self.mask_threshold
             outputs.append(
                 {
                     "masks": masks,
@@ -184,9 +160,7 @@ class Sam(nn.Module):
             align_corners=False,
         )
         masks = masks[..., : input_size[0], : input_size[1]]
-        masks = F.interpolate(
-            masks, original_size, mode="bilinear", align_corners=False
-        )
+        masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         return masks
 
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:

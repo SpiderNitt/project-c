@@ -238,7 +238,7 @@ class CamoSam(L.LightningModule):
         iou_pred_list = []
         total_num_objects = 1
 
-        for each_output, gt_mask, selector in zip(output, batch['gt_mask'] ):
+        for each_output, gt_mask in zip(output, batch['gt_mask'] ):
             print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             print(pred_masks.shape)
@@ -274,8 +274,8 @@ class CamoSam(L.LightningModule):
         return {'loss': loss_total, 'masks': pred_masks_list,  'iou': iou_pred_list} # List([num_true_obj, H, W])
     
     def validation_step(self, batch, batch_idx):
-        output_0, output_1, _ = self(batch, False)
-        bs = len(output_0)
+        output_val = self(batch, False)
+        bs = len(output_val)
         loss_focal = 0
         loss_dice = 0
         loss_iou = 0
@@ -294,7 +294,7 @@ class CamoSam(L.LightningModule):
         iou_pred_list = []
         total_num_objects = 1
 
-        for each_output, gt_mask, selector in zip(output, batch['gt_mask'] ):
+        for each_output, gt_mask in zip(output_val, batch['gt_mask'] ):
             print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             print(pred_masks.shape)
