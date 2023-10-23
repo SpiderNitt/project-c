@@ -28,7 +28,6 @@ class CamoSam(L.LightningModule):
         self,
         config,
         model,
-        learning_rate = False, #auto_lr
         ckpt = None
     ) -> None:
         """
@@ -52,8 +51,6 @@ class CamoSam(L.LightningModule):
         self.train_benchmark = []
         self.val_benchmark = []
         
-        self.learning_rate = learning_rate #auto_lr_find = True
-
     def set_requires_grad(self):
         model_grad = self.cfg.model.requires_grad
 
@@ -70,10 +67,9 @@ class CamoSam(L.LightningModule):
             param.requires_grad = model_grad.propagation_module
 
     def configure_optimizers(self) -> Any:
-        print("Using Learning Rate: ", self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate, f"instead of {self.cfg.opt.learning_rate}")
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr= self.learning_rate if self.learning_rate else self.cfg.opt.learning_rate,
+            lr= self.cfg.opt.learning_rate if self.cfg.opt.learning_rate else 0,
             betas=(0.9, 0.999),
             eps=1e-08,
             weight_decay=self.cfg.opt.weight_decay,

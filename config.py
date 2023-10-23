@@ -19,7 +19,7 @@ cfg = {
         "auto_lr": False,
         "weight_decay": 1e-4,
         "decay_factor": 1/2,
-        "steps": [100],
+        "steps": [75],
     },
     "model": {
         "type": "vit_l",
@@ -41,7 +41,7 @@ cfg = {
         "max_num_obj": 3,
         "num_frames": 3,
         "max_jump": 5,
-        "num_workers": 8,
+        "num_workers": 4,
         "pin_memory": False,
         "persistent_workers": True,
     },

@@ -277,8 +277,8 @@ def get_loader(cfg):
             train_list = [line.strip() for line in file]
         print("Training Samples: ",len(train_list))
 
-        train_dataset = VOSDataset(cfg.root_dir+'DAVIS/JPEGImages/Full-Resolution', 
-                                cfg.root_dir+'DAVIS/Annotations/Full-Resolution', 
+        train_dataset = VOSDataset(cfg.root_dir+'DAVIS/JPEGImages/480p', 
+                                cfg.root_dir+'DAVIS/Annotations/480p', 
                                 train_list ,max_jump=cfg.max_jump, 
                                 num_frames=cfg.num_frames,  
                                 max_num_obj=cfg.max_num_obj, 

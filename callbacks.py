@@ -13,15 +13,12 @@ class WandB_Logger(Callback):
         self.wnb = wnb.experiment
         self.version = wnb.version
         self.switch_flag = False
-        
-
-        if cfg.model_checkpoint_at not in os.listdir():
-            os.mkdir(cfg.model_checkpoint_at)
-            
+    
     @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
         if (pl_module.current_epoch + 1) % self.cfg.save_log_weights_interval == 0:
-            model_name = f"{os.path.join(self.cfg.model_checkpoint_at, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
+            Path(os.path.join(self.cfg.model_checkpoint_at), self.version).mkdir(parents=True, exist_ok=True)
+            model_name = f"{os.path.join(self.cfg.model_checkpoint_at, self.version, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
             
             if pl_module.current_epoch == 0:
                 pl_module.train_benchmark = []
@@ -40,7 +37,6 @@ class WandB_Logger(Callback):
             }
             
             torch.save(model_dict, model_name)
-            torch.save(model_dict, f"{os.path.join(self.cfg.model_checkpoint_at, 'stage0.pth')}")
 
             my_model = wandb.Artifact(f"model_{self.version}", type="model")
             my_model.add_file(model_name)

@@ -9,11 +9,11 @@ import shutil
 import glob
 
 class Memory():
-    def __init__(self, len) -> None:
+    def __init__(self, length) -> None:
         self.embed = []
         self.mask = []
         self.score = []
-        self.total_size = len
+        self.total_size = length
         self.frames_n = []
 
     def add(self, image_embed, mask, iou):
@@ -44,7 +44,7 @@ class Memory():
         return torch.stack(self.mask, dim=0)
 
 def infer(model, device, video_name, cfg, folder_name):
-    memory = Memory(len=3)
+    memory = Memory(length=3)
 
     pred_dir = Path(os.path.join(cfg.root_dir, 'DAVIS/Predictions', folder_name))
     Path.mkdir(pred_dir / video_name, exist_ok=True, parents=True)

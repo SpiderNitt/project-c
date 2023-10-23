@@ -18,6 +18,7 @@ torch.set_float32_matmul_precision('high')
 path  = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
 
+ckpt = None
 # api = wandb.Api()
 # artifact = api.artifact('spider-r-d/DAVIS Propagation/model_cyzxvd5f:v26', type='model')
 # artifact_dir = artifact.download()
@@ -25,8 +26,6 @@ path.mkdir(parents=True, exist_ok=True)
 # ckpt = torch.load('artifacts/model_cyzxvd5f:v26/499_epoch_7500_global_step.pth')
 if cfg.model.propagation_ckpt is not None:
     ckpt = torch.load(cfg.model.propagation_ckpt)
-else:
-    ckpt = None
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 device = "cuda" if torch.cuda.is_available() else "cpu"
