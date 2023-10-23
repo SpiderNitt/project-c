@@ -14,7 +14,7 @@ from pytorch_wavelets import DWTForward
 
 class ResidualBlock(nn.Module):
     def __init__(self, inchannel, outchannel, stride=1):
-        super(ResidualBlock, self).__init__()
+        super().__init__()
         self.left = nn.Sequential(
             nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, groups = inchannel//2, padding=1, bias=False),
             nn.BatchNorm2d(outchannel),
@@ -36,7 +36,7 @@ class ResidualBlock(nn.Module):
 
 
 class FeatureExtractor(nn.Module):
-        def __init__(self, ResidualBlock):
+        def __init__(self, ResidualBlock, embed_dim):
             super().__init__()
 
             self.inchannel = 64
@@ -46,11 +46,11 @@ class FeatureExtractor(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU() )
 
-            self.layer1 = self.make_layer(ResidualBlock, 96, 2, stride=1)
+            self.layer1 = self.make_layer(ResidualBlock, embed_dim//8, 2, stride=1)
             # self.layer2 = nn.MaxPool2d(2,stride = 2)
-            self.layer2 = self.make_layer(ResidualBlock, 96, 2, stride=2)
-            self.layer3 = self.make_layer(ResidualBlock, 192,2, stride=1)
-            self.layer4 = self.make_layer(ResidualBlock, 192, 2, stride=2)
+            self.layer2 = self.make_layer(ResidualBlock, embed_dim//8, 2, stride=2)
+            self.layer3 = self.make_layer(ResidualBlock, embed_dim//4,2, stride=1)
+            self.layer4 = self.make_layer(ResidualBlock, embed_dim//4, 2, stride=2)
 
         
         def make_layer(self, block, channels, num_blocks, stride):
@@ -211,15 +211,15 @@ class ImageEncoderViT(nn.Module):
             LayerNorm2d(out_chans),
         )
         
-        self.initial = FeatureExtractor(ResidualBlock) 
-        self.initial2 = FeatureExtractor(ResidualBlock) 
-        self.initial3 = FeatureExtractor(ResidualBlock)
-        self.initial4 = FeatureExtractor(ResidualBlock) 
+        self.feature_extractors = nn.ModuleList()
+        for i in range(4):
+            feature_extractor = FeatureExtractor(ResidualBlock,embed_dim=embed_dim)
+            self.feature_extractors.append(feature_extractor)
 
         self.dwt = DWTForward(J=1, wave = 'haar',mode='zero')
         self.adapter = nn.ModuleList()
         for i in range(depth):
-            adapter = Adapter(input_dim = 768, output_dim= 768)
+            adapter = Adapter(input_dim = embed_dim, output_dim= embed_dim)
             self.adapter.append(adapter)
         
 
@@ -228,20 +228,20 @@ class ImageEncoderViT(nn.Module):
         #[B,3,1024,1024]
 
   
-        Yl,Yh = self.dwt(x)
-        # print(f'Y_h {len(Yh)}') #1
+        # Yl,Yh = self.dwt(x)
+        # # print(f'Y_h {len(Yh)}') #1
 
-        feature_1 = self.initial(Yl) #[B,3,512,512]
+        # feature_1 = self.feature_extractors[0](Yl) #[B,3,512,512]
 
-        # print(f'tensor_shape {Yh[0].shape}') #[B,3,3,512,512]
+        # # print(f'tensor_shape {Yh[0].shape}') #[B,3,3,512,512]
 
-        feature_2 = self.initial2(Yh[0][:,:,0,:,:])
-        feature_3 = self.initial3(Yh[0][:,:,1,:,:])
-        feature_4 = self.initial4(Yh[0][:,:,2,:,:])
+        # feature_2 = self.feature_extractors[1](Yh[0][:,:,0,:,:])
+        # feature_3 = self.feature_extractors[2](Yh[0][:,:,1,:,:])
+        # feature_4 = self.feature_extractors[3](Yh[0][:,:,2,:,:])
 
    
         
-        extracted_features = torch.concat([feature_1,feature_2,feature_3,feature_4],dim = 1).permute(0,3,2,1)
+        # extracted_features = torch.concat([feature_1,feature_2,feature_3,feature_4],dim = 1).permute(0,3,2,1)
         # print(f'resnet_features {extracted_features.shape}') 
         
         x = self.patch_embed(x)
@@ -252,16 +252,19 @@ class ImageEncoderViT(nn.Module):
         
        # (B,768,64,64) ----> (B,64,64,768)
 
+        # for blk in self.blocks:
+        #     x = blk(x)
         
         for blk, adapter in zip(self.blocks,self.adapter):
             # print(f'blk_input {x.shape}') #[B,64,64,768]
             x = blk(x)
             # print(f'blk_output {x.shape}') #[B,64,64,768]
+            extracted_features = torch.randn((1,64,64,1024),device = 'cuda')
             adapter_output = x + adapter(extracted_features.permute(0,3,2,1)).permute(0,3,2,1)
             extracted_features = adapter_output
 
 
-
+        # x = self.neck(x.permute(0, 3, 1, 2))
         x = self.neck(adapter_output.permute(0, 3, 1, 2))
 
         return x

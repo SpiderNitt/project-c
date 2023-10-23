@@ -62,7 +62,7 @@ class CamoSam(L.LightningModule):
         model_grad = self.cfg.model.requires_grad
 
         for name,param in self.model.image_encoder.named_parameters():
-            if 'initial' in name or 'adapter' in name:
+            if 'adapter' in name:
                 param.requires_grad = True
             
             else:
@@ -218,6 +218,8 @@ class CamoSam(L.LightningModule):
         return iou
 
     def training_step(self, batch, batch_idx):
+    
+                 
         output = self(batch, False)
         bs = len(output)
         loss_focal = 0
@@ -391,8 +393,8 @@ class CamoSam(L.LightningModule):
 
         jaccard_0 = 0
         dice_0 = 0
-        jaccard_1 = 0
-        dice_1 = 0
+        # jaccard_1 = 0
+        # dice_1 = 0
         total_objects = 1
 
         for each_output, each_input in zip(output["masks"], batch):
@@ -443,4 +445,4 @@ class CamoSam(L.LightningModule):
         # if self.cfg.dataset.stage1:
         #     self.log_images_1(batch['info'], img_list_0, img_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, gt_mask_list_0, gt_mask_list_1, output['iou_0'], output['iou_1'], batch_idx=batch_idx, train=False)
         # else:
-        self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou_0'], batch_idx=batch_idx, train=False)
+        self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=False)

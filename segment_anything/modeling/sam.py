@@ -108,6 +108,7 @@ class Sam(nn.Module):
                 points = (image_record["point_coords"], image_record["point_labels"])
             else:
                 points = None
+                
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 points=points,
                 boxes=image_record.get("boxes", None),
