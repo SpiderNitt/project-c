@@ -177,7 +177,7 @@ class VOSDataset(Dataset):
 
                 cropped_img.append(pil_to_tensor(this_im))
                 this_im = torch.as_tensor(self.resize_longest.apply_image(np.array(this_im, dtype=np.uint8))).permute(2, 0, 1)
-                resize_longest_size = this_im.shape[-2:]
+                longest_resize_size = this_im.shape[-2:]
                 this_im = self.preprocess(this_im)
                 this_gt = np.array(this_gt)
 
@@ -241,8 +241,8 @@ class VOSDataset(Dataset):
                 'prev_masks': new_prev_frame_gt[:1], # (num_frames=1, num_obj=3, 256, 256)
                 'selector': selector, # (num_obj=3) Indicates if ith object exists
                 'cropped_img': cropped_img[-2:], # (num_frames=2, 3, H, W)
-                'original_size': list(all_frame_gt.shape[-2:]),
-                'resize_longest_size': list(resize_longest_size),
+                'original_size': torch.tensor(all_frame_gt.shape[-2:]),
+                'longest_resize_size': torch.tensor(longest_resize_size),
                 'info': info
             }
         else:
@@ -252,8 +252,8 @@ class VOSDataset(Dataset):
                 'prev_masks': new_prev_frame_gt, # (num_frames=2, num_obj=3, 256, 256)
                 'selector': selector, # (num_obj=3) Indicates if ith object exists
                 'cropped_img': cropped_img[-1:], # (num_frames=1, 3, H, W)
-                'original_size': list(all_frame_gt.shape[-2:]),
-                'resize_longest_size': list(resize_longest_size),
+                'original_size': torch.tensor(all_frame_gt.shape[-2:]),
+                'longest_resize_size': torch.tensor(longest_resize_size),
                 'info': info
             }
 
@@ -266,7 +266,7 @@ def collate_fn(batch):
     output = {}
     for key in batch[0].keys():
         output[key] = [d[key] for d in batch]
-        if key in ["image", "prev_masks", "selector"]:
+        if key in ["image", "prev_masks", "selector", "original_size", "longest_resize_size"]:
             output[key] = torch.stack(output[key], 0)
     
     return output
@@ -286,7 +286,7 @@ def get_loader(cfg):
                                 cfg=cfg)
         train_data_loader = data.DataLoader(
             dataset=train_dataset,
-            batch_size=cfg.train_batch_size,
+            batch_size=cfg.batch_size,
             shuffle=True,
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
@@ -298,8 +298,8 @@ def get_loader(cfg):
             val_list = [line.strip() for line in file]
         print("Validation Samples: ",len(val_list))
 
-        val_dataset = VOSDataset(cfg.root_dir+'DAVIS/JPEGImages/480p', 
-                                cfg.root_dir+'DAVIS/Annotations/480p', 
+        val_dataset = VOSDataset(cfg.root_dir+'DAVIS/JPEGImages/Full-Resolution', 
+                                cfg.root_dir+'DAVIS/Annotations/Full-Resolution', 
                                 val_list, max_jump=cfg.max_jump, 
                                 num_frames=cfg.num_frames,  
                                 max_num_obj=cfg.max_num_obj, 
@@ -307,7 +307,7 @@ def get_loader(cfg):
                                 cfg=cfg)
         val_data_loader = data.DataLoader(
             dataset=val_dataset,
-            batch_size=cfg.val_batch_size,
+            batch_size=cfg.batch_size,
             shuffle=False,
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
@@ -316,8 +316,11 @@ def get_loader(cfg):
         )
 
     elif cfg.name == "moca":
-        train_list = sorted(os.listdir(cfg.root_dir+'MoCA-Mask/MoCA_Video/TrainDataset_per_sq'))
-        val_list = sorted(os.listdir(cfg.root_dir+'MoCA-Mask/MoCA_Video/TestDataset_per_sq'))
+        video_list = os.listdir(cfg.root_dir+'MoCA-Mask/MoCA_Video/TrainDataset_per_sq')
+        train_len = int(len(video_list) * cfg.train_split)
+
+        train_list = random.sample(video_list, train_len)
+        val_list = list(set(video_list) - set(train_list))
 
         print("Training Samples: ",len(train_list))
         train_dataset = VOSDataset(cfg.root_dir+'MoCA-Mask/MoCA_Video/TrainDataset_per_sq', 
@@ -329,7 +332,7 @@ def get_loader(cfg):
                                 cfg=cfg)
         train_data_loader = data.DataLoader(
             dataset=train_dataset,
-            batch_size=cfg.train_batch_size,
+            batch_size=cfg.batch_size,
             shuffle=True,
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
@@ -338,8 +341,8 @@ def get_loader(cfg):
         )
         
         print("Validation Samples: ",len(val_list))
-        val_dataset = VOSDataset(cfg.root_dir+'MoCA-Mask/MoCA_Video/TestDataset_per_sq', 
-                                cfg.root_dir+'MoCA-Mask/MoCA_Video/TestDataset_per_sq', 
+        val_dataset = VOSDataset(cfg.root_dir+'MoCA-Mask/MoCA_Video/TrainDataset_per_sq', 
+                                cfg.root_dir+'MoCA-Mask/MoCA_Video/TrainDataset_per_sq', 
                                 val_list, max_jump=cfg.max_jump, 
                                 num_frames=cfg.num_frames,  
                                 max_num_obj=cfg.max_num_obj, 
@@ -347,7 +350,7 @@ def get_loader(cfg):
                                 cfg=cfg)
         val_data_loader = data.DataLoader(
             dataset=val_dataset,
-            batch_size=cfg.val_batch_size,
+            batch_size=cfg.batch_size,
             shuffle=False,
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
@@ -356,9 +359,7 @@ def get_loader(cfg):
         )
 
     elif cfg.name == "youtube":
-        train_list = sorted(os.listdir(cfg.root_dir+'YoutubeVOS/train/JPEGImages'))
-        train_list = sorted(os.listdir(cfg.root_dir+'YoutubeVOS/train/JPEGImages'))
-        print("Training Samples: ",len(train_list))
+        print("Training Samples: ",len(os.listdir(cfg.root_dir+'YoutubeVOS/train/JPEGImages')))
         train_dataset = VOSDataset(cfg.root_dir+'YoutubeVOS/train/JPEGImages', 
                                 cfg.root_dir+'YoutubeVOS/train/Annotations', 
                                 train_list ,max_jump=cfg.max_jump, 
@@ -368,7 +369,7 @@ def get_loader(cfg):
                                 cfg=cfg)
         train_data_loader = data.DataLoader(
             dataset=train_dataset,
-            batch_size=cfg.train_batch_size,
+            batch_size=cfg.batch_size,
             shuffle=True,
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
@@ -376,8 +377,7 @@ def get_loader(cfg):
             collate_fn=collate_fn
         )
         
-        val_list = sorted(os.listdir(cfg.root_dir+'YoutubeVOS/val/JPEGImages'))
-        print("Validation Samples: ",len(val_list))
+        print("Validation Samples: ",len(os.listdir(cfg.root_dir+'YoutubeVOS/val/JPEGImages')))
         val_dataset = VOSDataset(cfg.root_dir+'YoutubeVOS/val/JPEGImages', 
                                 cfg.root_dir+'YoutubeVOS/train/Annotations', 
                                 val_list, max_jump=cfg.max_jump, 
@@ -387,48 +387,7 @@ def get_loader(cfg):
                                 cfg=cfg)
         val_data_loader = data.DataLoader(
             dataset=val_dataset,
-            batch_size=cfg.val_batch_size,
-            shuffle=False,
-            persistent_workers=cfg.persistent_workers,
-            num_workers=cfg.num_workers,
-            pin_memory=cfg.pin_memory,
-            collate_fn=collate_fn
-        )
-
-    elif cfg.name == "youtube_davis":
-        train_list = sorted(os.listdir(cfg.root_dir+'YoutubeVOS/train/JPEGImages'))
-        print("Training Samples: ",len(train_list))
-        train_dataset = VOSDataset(cfg.root_dir+'YoutubeVOS/train/JPEGImages', 
-                                cfg.root_dir+'YoutubeVOS/train/Annotations', 
-                                train_list ,max_jump=cfg.max_jump, 
-                                num_frames=cfg.num_frames,  
-                                max_num_obj=cfg.max_num_obj, 
-                                val=False,
-                                cfg=cfg)
-        train_data_loader = data.DataLoader(
-            dataset=train_dataset,
-            batch_size=cfg.train_batch_size,
-            shuffle=True,
-            persistent_workers=cfg.persistent_workers,
-            num_workers=cfg.num_workers,
-            pin_memory=cfg.pin_memory,
-            collate_fn=collate_fn
-        )
-        
-        with open(cfg.root_dir+'DAVIS/ImageSets/2017/val.txt', 'r') as file:
-            val_list = [line.strip() for line in file]
-        print("Validation Samples: ",len(val_list))
-        
-        val_dataset = VOSDataset(cfg.root_dir+'DAVIS/JPEGImages/480p', 
-                                cfg.root_dir+'DAVIS/Annotations/480p', 
-                                val_list, max_jump=cfg.max_jump, 
-                                num_frames=cfg.num_frames,  
-                                max_num_obj=cfg.max_num_obj, 
-                                val=True,
-                                cfg=cfg)
-        val_data_loader = data.DataLoader(
-            dataset=val_dataset,
-            batch_size=cfg.val_batch_size,
+            batch_size=cfg.batch_size,
             shuffle=False,
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
