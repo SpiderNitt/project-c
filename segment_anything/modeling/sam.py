@@ -102,6 +102,9 @@ class Sam(nn.Module):
         outputs = []
         for image_record, curr_embedding in zip(batched_input, image_embeddings):
             if "point_coords" in image_record:
+              if image_record["point_coords"] == None:
+                points = None
+              else:
                 points = (image_record["point_coords"], image_record["point_labels"])
             else:
                 points = None

@@ -62,7 +62,7 @@ class CamoSam(L.LightningModule):
         model_grad = self.cfg.model.requires_grad
 
         for name,param in self.model.image_encoder.named_parameters():
-            if 'inital' in name or 'adapter' in name:
+            if 'initial' in name or 'adapter' in name:
                 param.requires_grad = True
             
             else:
@@ -238,7 +238,7 @@ class CamoSam(L.LightningModule):
         iou_pred_list = []
         total_num_objects = 1
 
-        for each_output, gt_mask in zip(output, batch['gt_mask'] ):
+        for each_output, gt_mask in zip(output, torch.stack(batch['gt_mask'],0) ):
             print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             print(pred_masks.shape)
@@ -294,7 +294,7 @@ class CamoSam(L.LightningModule):
         iou_pred_list = []
         total_num_objects = 1
 
-        for each_output, gt_mask in zip(output_val, batch['gt_mask'] ):
+        for each_output, gt_mask in zip(output_val, torch.stack(batch['gt_mask'],0) ):
             print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             print(pred_masks.shape)
@@ -349,7 +349,7 @@ class CamoSam(L.LightningModule):
             # dice_1 = 0
             total_objects = 1
 
-            for each_output, gt_mask, cropped_img, selector in zip(output["masks"], batch['gt_mask'], batch['cropped_img']):
+            for each_output, gt_mask in zip(output["masks"], batch['gt_mask']):
                 # total_objects += selector.sum()
                 gt_mask = gt_mask[0][selector]
                 sep_mask_list_0.append(each_output>0.5)
@@ -395,7 +395,7 @@ class CamoSam(L.LightningModule):
         dice_1 = 0
         total_objects = 1
 
-        for each_output, gt_mask, cropped_img, selector in zip(output["masks_0"], batch['gt_mask'], batch['cropped_img'], batch['selector']):
+        for each_output, gt_mask in zip(output["masks_0"], batch['gt_mask']):
             # total_objects += selector.sum()
             gt_mask = gt_mask[0]
             sep_mask_list_0.append(each_output>0.5)
