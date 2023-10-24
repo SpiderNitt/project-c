@@ -274,8 +274,9 @@ class VideoDataset(data.Dataset):
         imgs = []
         names = []
         all_gt = []
+        info = {}
         index = index % len(self.image_list)
-
+        info['name'] = self.image_list[index]
         imgs = self.rgb_loader(self.image_list[index])
         gt = np.asarray(self.binary_loader(self.gt_list[index]))
     
@@ -438,9 +439,10 @@ class VideoDataset(data.Dataset):
             "org_img": img_copy, # numpy array (H, W, 3)
             "gt_mask":  torch.stack(all_gt_copy), # Tensor(n, H, W)
             "original_size": all_gt_copy[0].shape, # List (H,W) - [720, 1280]
-            "point_coords": torch.stack(all_point_prompt, dim=0) if all_point_prompt is not None else None, # numpy array (n, N,2) - 
-            "point_labels": torch.stack(all_label_prompt, dim=0) if all_label_prompt is not None else None, # numpy array (n, N,)
-            "mask_input": torch.stack(all_mask_prompt, dim=0) if all_mask_prompt is not None else None # numpy array (H, W) -> ideally requires 256,256 which is done inside forward pass for logging purposes
+            "point_coords": torch.stack(all_point_prompt, dim=0) if all_point_prompt is not None else None, # torch Tensor (B, N,2) - 
+            "point_labels": torch.stack(all_label_prompt, dim=0) if all_label_prompt is not None else None, # torch Tensor (B, N,)
+            "mask_inputs": torch.stack(all_mask_prompt, dim=0).unsqueeze(1) if all_mask_prompt is not None else None, # torch Tensor (H, W) -> ideally requires 256,256 which is done inside forward pass for logging purposes
+            "info":info,
         }  # image -> list((3, H', W')), gt_mask -> Tensor(H, W), original_size: (H, W)
 
     def rgb_loader(self, path):
@@ -457,6 +459,7 @@ class VideoDataset(data.Dataset):
         return len(self.image_list)
 
 def collate_fn(batch):
+
     return batch
 
 
