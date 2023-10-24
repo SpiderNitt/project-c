@@ -52,7 +52,7 @@ class CamoSam(L.LightningModule):
         #     if p.requires_grad:
         #         print(n)
                 
-        self.epoch_freq = self.cfg.train_metric_interval
+        self.epoch_freq = 1#self.cfg.train_metric_interval
         
         self.train_benchmark = []
         self.val_benchmark = []
@@ -112,11 +112,11 @@ class CamoSam(L.LightningModule):
         return check_idx % self.epoch_freq == 0
 
     @torch.no_grad()
-    def log_images(self, img_list, sep_mask_list, gt_mask_list, iou_list,prompt_point,prompt_label,prompt_mask, img_shapes, batch_idx, train=True):
+    def log_images(self, img_list, sep_mask_list, gt_mask_list, iou_list,prompt_point,prompt_label,prompt_mask, img_shapes, org_point_prompt, batch_idx, train=True):
         
         table = wandb.Table(columns=['ID', 'Image', 'IoU'])
         # print(len(img_list), len(sep_mask_list), len(gt_mask_list), len(prompt_point), len(prompt_mask))
-        for id, (img, gt, pred, point, mask, iou, img_shapes_) in enumerate(zip(img_list, gt_mask_list, sep_mask_list, prompt_point, prompt_mask, iou_list, img_shapes)):
+        for id, (img, gt, pred, point, mask, iou, img_shapes_, org_point_prompt_) in enumerate(zip(img_list, gt_mask_list, sep_mask_list, prompt_point, prompt_mask, iou_list, img_shapes, org_point_prompt)):
             # print(img_shapes_)
             pred = pred.int()
             gt = gt.int()
@@ -141,8 +141,10 @@ class CamoSam(L.LightningModule):
 
 
             if mask is not None:
-                mask = mask.cpu()
+                mask = mask.cpu().squeeze(1)
+                # print(mask.shape)
                 for i in range(len(mask)): # each instance
+                    # print(mask[i].shape, mask[i].unique())
                     # plt.subplot(1,3,1)
                     # plt.imshow(img)
                     # plt.subplot(1,3,2)
@@ -174,19 +176,23 @@ class CamoSam(L.LightningModule):
 
                     mask_[mask_!=0] = 150-i*10
                     log_masks[f"mask prompt_{i}"] = {"mask_data" : mask_}
+                    # print(mask_.shape)
                  
             if point is not None:
-                # print(point, img_shapes_)
-                
-                point[..., 0] = point[..., 0] * (img_shapes_[1] / 1024)
-                point[..., 1] = point[..., 1] * (img_shapes_[2] / 1024)
+                # print(point, img_shapes_, org_point_prompt_, org_point_prompt_.shape)
+                # print(org_point_prompt_.shape, point.shape)
+                # point[..., 0] = point[..., 0] * (img_shapes_[2] / 1024)
+                # point[..., 1] = point[..., 1] * (img_shapes_[1] / 1024)
                 
                 # print(point)
-                point = point.int().cpu().detach().numpy()
+                # print(point)
+                org_point_prompt_ = org_point_prompt_.int().cpu().detach().numpy()
                 for i in range(len(point)): # each instance
                     point_as_mask = np.zeros((img.shape[:-1]))
-                    for coords in point[i]:
-                        coords = coords[::-1]
+                    for coords in org_point_prompt_[i]:
+                        # print("COORDS",coords, coords.shape)
+                        
+                        # coords = coords[::-1]
                         point_as_mask = cv2.circle(point_as_mask, coords, radius=10, color=100, thickness=-1)   
                     point_as_mask[point_as_mask!=0] = 100+i*10
                     # print(f"point_as_mask {point_as_mask.shape}")
@@ -312,22 +318,22 @@ class CamoSam(L.LightningModule):
         iou_pred_list = []
         
         total_num_objects = 0
-        print(f'batch_idx{batch_idx}')
+        # print(f'batch_idx{batch_idx}')
         for each_output, each_input in zip(output, batch):
             
-            print(each_input['point_coords'])
+            # print(each_input['point_coords'])
             # print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             # print(pred_masks.shape)
             pred_masks = each_output["masks"] # [1, H, W]
-            print(f'pred_masks {pred_masks.shape}')
+            # print(f'pred_masks {pred_masks.shape}')
             # plt.subplot(1,2,1)
             # plt.imshow(pred_masks[0][0].detach().cpu())
             # plt.show()
             # pred_masks_list.append(pred_masks.detach())
             # pred_masks = pred_masks[selector] # [num_true_obj, H, W]
             gt_mask = each_input['gt_mask'] # [num_obj, H, W] 
-            print(f'gt_mask {gt_mask.shape}')
+            # print(f'gt_mask {gt_mask.shape}')
 
             
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
@@ -354,7 +360,7 @@ class CamoSam(L.LightningModule):
             "Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou,
         }
 
-        # self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
 
         return {'loss': loss_total, 'masks': pred_masks_list,  'iou': iou_pred_list} # List([num_true_obj, H, W])
     
@@ -432,6 +438,7 @@ class CamoSam(L.LightningModule):
             prompt_label = []
             prompt_mask = []
             img_shapes = []
+            org_point_prompt = []
             # sep_gt_mask_list_1 = []
 
             jaccard_0 = 0
@@ -446,6 +453,7 @@ class CamoSam(L.LightningModule):
                 prompt_label.append(each_input.get('point_labels',None))
                 prompt_mask.append(each_input.get('mask_inputs',None))
                 img_shapes.append(each_input.get('image',None).shape)
+                org_point_prompt.append(each_input.get('point_coords_original',None))
             
                 gt_mask = each_input['gt_mask']
                 sep_mask_list_0.append(each_output>0.5)
@@ -470,7 +478,7 @@ class CamoSam(L.LightningModule):
 
             self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
             
-            self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes,  batch_idx=batch_idx, train=True)
+            self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes, org_point_prompt,  batch_idx=batch_idx, train=True)
     
     def on_validation_batch_end(self, output, batch, batch_idx):
         img_list_0 = []
@@ -487,6 +495,7 @@ class CamoSam(L.LightningModule):
         prompt_label = []
         prompt_mask = []
         img_shapes = []
+        org_point_prompt = []
         # sep_gt_mask_list_1 = []
 
         jaccard_0 = 0
@@ -501,6 +510,7 @@ class CamoSam(L.LightningModule):
             prompt_label.append(each_input.get('point_labels',None))
             prompt_mask.append(each_input.get('mask_inputs',None))
             img_shapes.append(each_input.get('image',None).shape)
+            org_point_prompt.append(each_input.get('point_coords_original',None))
             
             gt_mask = each_input['gt_mask']
             sep_mask_list_0.append(each_output>0.5)
@@ -546,4 +556,4 @@ class CamoSam(L.LightningModule):
         self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
 
 
-        self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes,  batch_idx=batch_idx, train=False)
+        self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes, org_point_prompt,  batch_idx=batch_idx, train=False)

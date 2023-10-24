@@ -415,7 +415,7 @@ class VideoDataset(data.Dataset):
                         label_prompt = np.asarray([1])
                         # print(point_prompt)
                     
-                    print(point_prompt)
+                    # print(point_prompt)
                     all_point_prompt.append(torch.as_tensor(self.transform.apply_coords(point_prompt,  all_gt_copy[0].shape), dtype=torch.float))
                     all_label_prompt.append(torch.as_tensor(label_prompt, dtype=torch.int))
                     all_point_prompt_original.append(torch.as_tensor(point_prompt , dtype = torch.float))
@@ -442,7 +442,7 @@ class VideoDataset(data.Dataset):
             "gt_mask":  torch.stack(all_gt_copy), # Tensor(n, H, W)
             "original_size": all_gt_copy[0].shape, # List (H,W) - [720, 1280]
             "point_coords": torch.stack(all_point_prompt, dim=0) if all_point_prompt is not None else None, # torch Tensor (B, N,2),
-            "point_coords_original": torch.flip(torch.stack(all_point_prompt_original,dim=0),dims=(2,)) if all_point_prompt_original is not None else None,
+            "point_coords_original": torch.stack(all_point_prompt_original,dim=0) if all_point_prompt_original is not None else None,
             "point_labels": torch.stack(all_label_prompt, dim=0) if all_label_prompt is not None else None, # torch Tensor (B, N,)
             "mask_inputs": torch.stack(all_mask_prompt, dim=0).unsqueeze(1) if all_mask_prompt is not None else None, # torch Tensor (H, W) -> ideally requires 256,256 which is done inside forward pass for logging purposes
             "info":info,
