@@ -233,7 +233,7 @@ class ImageEncoderViT(nn.Module):
 
         feature_1 = self.feature_extractors[0](Yl) #[B,3,512,512]
 
-        # # print(f'tensor_shape {Yh[0].shape}') #[B,3,3,512,512]
+        # print(f'tensor_shape {Yh[0].shape}') #[B,3,3,512,512]
 
         feature_2 = self.feature_extractors[1](Yh[0][:,:,0,:,:])
         feature_3 = self.feature_extractors[2](Yh[0][:,:,1,:,:])
@@ -259,6 +259,7 @@ class ImageEncoderViT(nn.Module):
             # print(f'blk_input {x.shape}') #[B,64,64,768]
             x = blk(x)
             # print(f'blk_output {x.shape}') #[B,64,64,768]
+            extracted_features = torch.randn((1,64,64,1024),device = 'cuda')
             adapter_output = x + adapter(extracted_features.permute(0,3,2,1)).permute(0,3,2,1)
             extracted_features = adapter_output
 
