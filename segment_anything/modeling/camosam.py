@@ -63,7 +63,7 @@ class CamoSam(L.LightningModule):
         model_grad = self.cfg.model.requires_grad
 
         for name,param in self.model.named_parameters():
-            if 'adapter' in name or 'feature_extractor' in name or 'dwt' in name:
+            if 'adapter' in name or 'feature_extractor' in name :
                 param.requires_grad = True
             
             else:
@@ -310,9 +310,12 @@ class CamoSam(L.LightningModule):
 
         pred_masks_list = []
         iou_pred_list = []
-        total_num_objects = 1
-
+        
+        total_num_objects = 0
+        print(f'batch_idx{batch_idx}')
         for each_output, each_input in zip(output, batch):
+            
+            print(each_input['point_coords'])
             # print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             # print(pred_masks.shape)
@@ -323,16 +326,15 @@ class CamoSam(L.LightningModule):
             # plt.show()
             # pred_masks_list.append(pred_masks.detach())
             # pred_masks = pred_masks[selector] # [num_true_obj, H, W]
-            gt_mask = each_input['gt_mask'] # [num_obj, H, W] # gt_mask[0] to get the 0th mask from the prediction
+            gt_mask = each_input['gt_mask'] # [num_obj, H, W] 
             print(f'gt_mask {gt_mask.shape}')
-            # if gt_mask[0]>1:
-            #     plt.subplot(1,2,2)
-            #     plt.imshow(gt_mask[0].shape)
+
             
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
             pred_masks_list.append(pred_masks_sigmoid)
             iou_pred_list.append(each_output["iou_predictions"].reshape(-1))
-            
+            total_num_objects += each_input['gt_mask'].shape[0]
+
             loss_focal = loss_focal + self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
             # print(f'loss_focal {loss_focal.requires_grad}')
             loss_dice = loss_dice + self.dice_loss(pred_masks_sigmoid, gt_mask)
@@ -375,18 +377,19 @@ class CamoSam(L.LightningModule):
 
         pred_masks_list = []
         iou_pred_list = []
-        total_num_objects = 1
+        total_num_objects = 0
 
         for each_output, each_input in zip(output_val, batch ):
             # print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             # print(pred_masks.shape)
+            
             pred_masks = each_output["masks"] # [1, H, W]
             # print(f'pre_masks{pred_masks.shape}')
             # pred_masks_list.append(pred_masks.detach())
             # pred_masks = pred_masks[selector] # [num_true_obj, H, W]
             gt_mask = each_input['gt_mask'] # [num_obj, H, W] # gt_mask[0] to get the 0th mask from the prediction
-                        
+            total_num_objects += each_input['gt_mask'].shape[0]
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
             pred_masks_list.append(pred_masks_sigmoid.detach())
             iou_pred_list.append(each_output["iou_predictions"].reshape(-1).detach())
@@ -435,13 +438,13 @@ class CamoSam(L.LightningModule):
             dice_0 = 0
             # jaccard_1 = 0
             # dice_1 = 0
-            total_objects = 1
+            total_objects = 0
 
             for each_output, each_input in zip(output["masks"], batch):
                 # total_objects += selector.sum()
                 prompt_point.append(each_input.get('point_coords',None))
                 prompt_label.append(each_input.get('point_labels',None))
-                prompt_mask.append(each_input.get('mask_input',None))
+                prompt_mask.append(each_input.get('mask_inputs',None))
                 img_shapes.append(each_input.get('image',None).shape)
             
                 gt_mask = each_input['gt_mask']
@@ -459,15 +462,15 @@ class CamoSam(L.LightningModule):
                 max_, max_pos = torch.max(each_output, dim=0)
                 mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
                 mask_list_0.append(mask)
-                
+                total_objects += each_input['gt_mask'].shape[0]
                 img_list_0.append(each_input["org_img"])
                 metrics_all = {'Metrics/train/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/train/dice_single_obj_0': dice_0 / total_objects}
 
                 metrics_all.update({'Metrics/train/jaccard_single': jaccard_0 / total_objects, 'Metrics/train/dice_single': dice_0 / total_objects})
 
             self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
-            if batch_idx < 5:
-                self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes,  batch_idx=batch_idx, train=True)
+            
+            self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes,  batch_idx=batch_idx, train=True)
     
     def on_validation_batch_end(self, output, batch, batch_idx):
         img_list_0 = []
@@ -490,13 +493,13 @@ class CamoSam(L.LightningModule):
         dice_0 = 0
         # jaccard_1 = 0
         # dice_1 = 0
-        total_objects = 1
+        total_objects = 0
 
         for each_output, each_input in zip(output["masks"], batch):
             # total_objects += selector.sum()
             prompt_point.append(each_input.get('point_coords',None))
             prompt_label.append(each_input.get('point_labels',None))
-            prompt_mask.append(each_input.get('mask_input',None))
+            prompt_mask.append(each_input.get('mask_inputs',None))
             img_shapes.append(each_input.get('image',None).shape)
             
             gt_mask = each_input['gt_mask']
@@ -514,7 +517,7 @@ class CamoSam(L.LightningModule):
             max_, max_pos = torch.max(each_output, dim=0)
             mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
             mask_list_0.append(mask)
-
+            total_objects += each_input['gt_mask'].shape[0]
             img_list_0.append(each_input["org_img"])
         metrics_all = {'Metrics/val/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/val/dice_single_obj_0': dice_0 / total_objects}
 
