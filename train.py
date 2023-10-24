@@ -42,7 +42,7 @@ config = {
         "requires_grad": {
             "image_encoder": False,
             "prompt_encoder": False,
-            "mask_decoder": False,
+            "mask_decoder": True,
             "propagation_module": False,
         },
     },
@@ -158,17 +158,17 @@ class WandB_Logger(Callback):
         pl_module.val_benchmark = []
 
 # torch._dynamo.config.verbose=True # for debugging
-wandblogger = WandbLogger(project="adapter_training", save_code=True, settings=wandb.Settings(code_dir="."))
-model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
+# wandblogger = WandbLogger(project="adapter_training", save_code=True, settings=wandb.Settings(code_dir="."))
+# model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
 lr_monitor = LearningRateMonitor(logging_interval='step')
 
 # datamodule = LitDataModule(cfg.dataset.batch_size)
 trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
-    callbacks=[model_weight_callback, ModelSummary(max_depth=2), lr_monitor],
+    callbacks=[ ModelSummary(max_depth=2), lr_monitor],
     precision=cfg.precision,
-    logger=wandblogger,
+    # logger=wandblogger,
     max_epochs=cfg.num_epochs,
     # strategy="ddp",
     log_every_n_steps=15,
@@ -177,8 +177,8 @@ trainer = L.Trainer(
     profiler='simple',
     # overfit_batches=1
 )
-if trainer.global_rank == 0:
-    wandblogger.experiment.config.update(config)
+# if trainer.global_rank == 0:
+    # wandblogger.experiment.config.update(config)
 
 train_dataloader, validation_dataloader = get_loader(cfg.dataset)
 trainer.fit(model, train_dataloader, validation_dataloader)
