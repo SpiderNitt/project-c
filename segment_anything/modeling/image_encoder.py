@@ -228,20 +228,20 @@ class ImageEncoderViT(nn.Module):
         #[B,3,1024,1024]
 
   
-        # Yl,Yh = self.dwt(x)
+        Yl,Yh = self.dwt(x)
         # # print(f'Y_h {len(Yh)}') #1
 
-        # feature_1 = self.feature_extractors[0](Yl) #[B,3,512,512]
+        feature_1 = self.feature_extractors[0](Yl) #[B,3,512,512]
 
         # # print(f'tensor_shape {Yh[0].shape}') #[B,3,3,512,512]
 
-        # feature_2 = self.feature_extractors[1](Yh[0][:,:,0,:,:])
-        # feature_3 = self.feature_extractors[2](Yh[0][:,:,1,:,:])
-        # feature_4 = self.feature_extractors[3](Yh[0][:,:,2,:,:])
+        feature_2 = self.feature_extractors[1](Yh[0][:,:,0,:,:])
+        feature_3 = self.feature_extractors[2](Yh[0][:,:,1,:,:])
+        feature_4 = self.feature_extractors[3](Yh[0][:,:,2,:,:])
 
    
         
-        # extracted_features = torch.concat([feature_1,feature_2,feature_3,feature_4],dim = 1).permute(0,3,2,1)
+        extracted_features = torch.concat([feature_1,feature_2,feature_3,feature_4],dim = 1).permute(0,3,2,1)
         # print(f'resnet_features {extracted_features.shape}') 
         
         x = self.patch_embed(x)
@@ -259,7 +259,6 @@ class ImageEncoderViT(nn.Module):
             # print(f'blk_input {x.shape}') #[B,64,64,768]
             x = blk(x)
             # print(f'blk_output {x.shape}') #[B,64,64,768]
-            extracted_features = torch.randn((1,64,64,1024),device = 'cuda')
             adapter_output = x + adapter(extracted_features.permute(0,3,2,1)).permute(0,3,2,1)
             extracted_features = adapter_output
 
