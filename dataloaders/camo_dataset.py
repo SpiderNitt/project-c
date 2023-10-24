@@ -291,7 +291,8 @@ class VideoDataset(data.Dataset):
             imgs, all_gt = randomRotation(imgs, all_gt)
             imgs = colorEnhance(imgs)
             # all_gt = randomPeper(all_gt) # SERIOUSLY WHY DO WE NEED THIS ?????????????
-            
+
+        img_copy = np.asarray(imgs).copy()   
         imgs = torch.as_tensor(
                 self.transform.apply_image(np.array(imgs, dtype=np.uint8))
             ).permute(2, 0, 1)
@@ -320,6 +321,7 @@ class VideoDataset(data.Dataset):
 
         is_mask_prompt = random.choice([True, False])
         is_point_prompt = random.choice([True, False]) if is_mask_prompt else True #atleast one of them
+        is_mask_prompt = is_point_prompt = True
         
         if is_point_prompt:
             self.n_points+=1
@@ -433,6 +435,7 @@ class VideoDataset(data.Dataset):
        
         return {
             "image": imgs, # Tensor(3, H (transformed), 1024)
+            "org_img": img_copy, # numpy array (H, W, 3)
             "gt_mask":  torch.stack(all_gt_copy), # Tensor(n, H, W)
             "original_size": all_gt_copy[0].shape, # List (H,W) - [720, 1280]
             "point_coords": torch.stack(all_point_prompt, dim=0) if all_point_prompt is not None else None, # numpy array (n, N,2) - 

@@ -142,9 +142,9 @@ class WandB_Logger(Callback):
         
         torch.save({
                     'cfg': self.cfg,
-                    # 'epoch': pl_module.current_epoch,
-                    # 'adapter_state_dict': pl_module.model.image_encoder.adapter.state_dict(),
-                    # 'feature_extractor_state_dict':pl_module.model.image_encoder.feature_extractors.state_dict(),
+                    'epoch': pl_module.current_epoch,
+                    'adapter_state_dict': pl_module.model.image_encoder.adapter.state_dict(),
+                    'feature_extractor_state_dict':pl_module.model.image_encoder.feature_extractors.state_dict(),
                     'optimizer_state_dict': pl_module.optimizers().state_dict() if type(pl_module.optimizers())!=list else {},
                     'benchmark': [pl_module.train_benchmark, pl_module.val_benchmark],
         }, model_name)
@@ -158,8 +158,8 @@ class WandB_Logger(Callback):
         pl_module.val_benchmark = []
 
 # torch._dynamo.config.verbose=True # for debugging
-# wandblogger = WandbLogger(project="adapter_training", save_code=True, settings=wandb.Settings(code_dir="."))
-# model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
+wandblogger = WandbLogger(project="adapter_training", save_code=True, settings=wandb.Settings(code_dir="."))
+model_weight_callback = WandB_Logger(cfg, wandblogger.experiment)
 lr_monitor = LearningRateMonitor(logging_interval='step')
 
 # datamodule = LitDataModule(cfg.dataset.batch_size)
@@ -168,10 +168,10 @@ trainer = L.Trainer(
     devices=cfg.num_devices,
     callbacks=[ ModelSummary(max_depth=2), lr_monitor],
     precision=cfg.precision,
-    # logger=wandblogger,
+    logger=wandblogger,
     max_epochs=cfg.num_epochs,
     # strategy="ddp",
-    log_every_n_steps=15,
+    log_every_n_steps=1,
     check_val_every_n_epoch=cfg.train_metric_interval,
     enable_checkpointing=False,
     profiler='simple',

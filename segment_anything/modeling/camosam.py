@@ -17,6 +17,7 @@ import lightning as L
 import torchmetrics
 import wandb
 import gc
+import cv2
 import matplotlib.pyplot as plt
 from torchvision.transforms.functional import resize, to_pil_image  # type: ignore
 
@@ -111,41 +112,99 @@ class CamoSam(L.LightningModule):
         return check_idx % self.epoch_freq == 0
 
     @torch.no_grad()
-    def log_images(self, information, img_list, sep_mask_list, mask_list, gt_mask_list, iou_list,prompt_point,prompt_label,prompt_mask, batch_idx, train=True):
-        for info, img, sep_mask, mask, gt, iou in zip(information, img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, iou_list_0):
-            prompt_mask = prompt_mask * 255
-            table = wandb.Table(columns=['Image'])
-            for img, gt, pred, point, mask in zip(img_list, gt_list, mask_list, prompt_point, prompt_mask):
-                gt[gt!=0] = 255
-                pred[pred!=0] = 200
-                log_masks = {
-				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}, 
-			}
-            if mask is not None:
-                mask[mask!=0] = 150
-                log_masks["mask prompt"] : {"mask_data" : mask}
-                mask_img = wandb.Image(img, masks=log_masks)
-                table.add_data(mask_img)
-                
-            if point is not None:
-                point_as_mask = np.zeros((pred.shape))
-                for coords in point:
-                    point_as_mask = cv2.circle(point_as_mask, coords, radius=10, color=100, thickness=-1)
-                    point_as_mask[point_as_mask!=0] = 100
-                    log_masks["point prompt"] = {"mask_data": point_as_mask}
-            if train:
-                wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Train" : table})
+    def log_images(self, img_list, sep_mask_list, gt_mask_list, iou_list,prompt_point,prompt_label,prompt_mask, img_shapes, batch_idx, train=True):
+        
+        table = wandb.Table(columns=['ID', 'Image', 'IoU'])
+        # print(len(img_list), len(sep_mask_list), len(gt_mask_list), len(prompt_point), len(prompt_mask))
+        for id, (img, gt, pred, point, mask, iou, img_shapes_) in enumerate(zip(img_list, gt_mask_list, sep_mask_list, prompt_point, prompt_mask, iou_list, img_shapes)):
+            # print(img_shapes_)
+            pred = pred.int()
+            gt = gt.int()
             
-            else:
-                wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Validation" : table})
-                # mask_dict = {}
-                # mask_dict["ground_truth"] = {"mask_data" : gt.cpu().numpy()}
-                # mask_dict["prediction"] = {"mask_data" : mask.cpu().numpy()}
-                # for obj_index, (pred_obj, iou_obj) in enumerate(zip(sep_mask, iou)):
-                #     mask_dict[f"prediction_{obj_index + 1}"] = {"mask_data" : pred_obj.cpu().numpy() * (obj_index + 1)}
-                # self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img], step=self.global_step, masks=[mask_dict], 
-                #                     caption=[f"Epoch_{self.current_epoch}_IoU_{iou_obj.cpu().item(): 0.3f}_Frames_{info['frames']}"])
+            gt[gt!=0] = 255
+            for i in range(len(pred)):
+                pred[i,pred[i]!=0] = 200-i*10 #contrast
+            
+            # print(pred.shape) #torch.Size([2, 1, 650, 1024])
+            pred = pred.squeeze(1).cpu().detach().numpy()
+            # print(pred.shape)
+            gt = gt.cpu().numpy()
+            # img = img.permute(1,2,0)
+            # print(img.shape, gt.shape, pred.shape, point.shape, mask.shape, iou.shape)
+            # print(gt.unique(), pred.unique(), mask.unique())
+            
+            log_masks = {}
+            for i in range(len([pred])):
+                # print(f"pred {pred[i].shape}, gt {gt[i].shape}")
+                log_masks[f'prediction_{i}'] = { "mask_data" : pred[i]}
+                log_masks[f'ground truth_{i}'] = {"mask_data" : gt[i]}
 
+
+            if mask is not None:
+                mask = mask.cpu()
+                for i in range(len(mask)): # each instance
+                    # plt.subplot(1,3,1)
+                    # plt.imshow(img)
+                    # plt.subplot(1,3,2)
+                    # plt.imshow(mask[i].numpy())
+                    # plt.subplot(1,3,3)
+                    # plt.imshow(gt[i])
+                    # plt.show()
+                    # print(mask[i].shape, mask[i].unique())
+                    
+                    mask_ = cv2.resize(mask[i].numpy()*255, (1024,1024), interpolation=cv2.INTER_NEAREST)
+                    mask_ = mask_[:img_shapes_[1], :img_shapes_[2]]
+                    # print(mask_.shape)
+                    mask_ = cv2.resize(mask_, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    # mask_ = self.model.postprocess_masks(mask[i].unsqueeze(0).unsqueeze(0)*255, input_size=(256,256), original_size=img.shape[:-1]).squeeze().squeeze()
+                    ## do overlay
+                    # plt.subplot(1,3,1)
+                    # plt.imshow(img)
+                    # plt.subplot(1,3,2)
+                    # plt.imshow(mask_)
+                    # plt.subplot(1,3,3)
+                    # plt.imshow(gt[i])
+                    # plt.show()
+                    # plt.imshow(img)
+                    # plt.imshow(mask_, alpha=0.5)
+                    # plt.show()
+                    # print(mask_.shape, np.unique(mask_))
+                    # mask_ = cv2.resize(mask[i].numpy(), (1024,1024), interpolation=cv2.INTER_NEAREST)
+                    # mask_ = mask_[:img.shape[0], :img.shape[1]]
+
+                    mask_[mask_!=0] = 150-i*10
+                    log_masks[f"mask prompt_{i}"] = {"mask_data" : mask_}
+                 
+            if point is not None:
+                # print(point, img_shapes_)
+                
+                point[..., 0] = point[..., 0] * (img_shapes_[1] / 1024)
+                point[..., 1] = point[..., 1] * (img_shapes_[2] / 1024)
+                
+                # print(point)
+                point = point.int().cpu().detach().numpy()
+                for i in range(len(point)): # each instance
+                    point_as_mask = np.zeros((img.shape[:-1]))
+                    for coords in point[i]:
+                        coords = coords[::-1]
+                        point_as_mask = cv2.circle(point_as_mask, coords, radius=10, color=100, thickness=-1)   
+                    point_as_mask[point_as_mask!=0] = 100+i*10
+                    # print(f"point_as_mask {point_as_mask.shape}")
+                    # plt.imshow(gt[i])
+                    # plt.imshow(point_as_mask, alpha=0.5)
+                    # plt.show()
+                    
+                    log_masks[f"point prompt_{i}"] = {"mask_data": point_as_mask}
+                          
+            # for i in log_masks:
+            #     print(f"{i} {log_masks[i]['mask_data'].shape}")
+            mask_img = wandb.Image(img, masks=log_masks)
+            table.add_data(id, mask_img, iou)
+
+        if train:
+            wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Train" : table})
+        else:
+            wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Validation" : table})
 
     def sigmoid_focal_loss(
         self,
@@ -351,7 +410,7 @@ class CamoSam(L.LightningModule):
         avg_iou = loss_iou / (total_num_objects)
 
         self.val_benchmark.append(loss_total.item())
-        # self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
 
         return {'loss': loss_total, 'masks': pred_masks_list, 'iou': iou_pred_list} # List([num_true_obj, H, W])
     
@@ -366,6 +425,10 @@ class CamoSam(L.LightningModule):
             gt_mask_list_0 = []
             # gt_mask_list_1 = []
             sep_gt_mask_list_0 = []
+            prompt_point = []
+            prompt_label = []
+            prompt_mask = []
+            img_shapes = []
             # sep_gt_mask_list_1 = []
 
             jaccard_0 = 0
@@ -376,6 +439,11 @@ class CamoSam(L.LightningModule):
 
             for each_output, each_input in zip(output["masks"], batch):
                 # total_objects += selector.sum()
+                prompt_point.append(each_input.get('point_coords',None))
+                prompt_label.append(each_input.get('point_labels',None))
+                prompt_mask.append(each_input.get('mask_input',None))
+                img_shapes.append(each_input.get('image',None).shape)
+            
                 gt_mask = each_input['gt_mask']
                 sep_mask_list_0.append(each_output>0.5)
                 sep_gt_mask_list_0.append(gt_mask.type(torch.int8))
@@ -392,15 +460,14 @@ class CamoSam(L.LightningModule):
                 mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
                 mask_list_0.append(mask)
                 
-                # img_list_0.append(cropped_img[0])
+                img_list_0.append(each_input["org_img"])
                 metrics_all = {'Metrics/train/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/train/dice_single_obj_0': dice_0 / total_objects}
 
                 metrics_all.update({'Metrics/train/jaccard_single': jaccard_0 / total_objects, 'Metrics/train/dice_single': dice_0 / total_objects})
 
-            # self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
-            
-            # if batch_idx < 5:
-                    # self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=True)
+            self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+            if batch_idx < 5:
+                self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes,  batch_idx=batch_idx, train=True)
     
     def on_validation_batch_end(self, output, batch, batch_idx):
         img_list_0 = []
@@ -412,6 +479,11 @@ class CamoSam(L.LightningModule):
         gt_mask_list_0 = []
         # gt_mask_list_1 = []
         sep_gt_mask_list_0 = []
+        
+        prompt_point = []
+        prompt_label = []
+        prompt_mask = []
+        img_shapes = []
         # sep_gt_mask_list_1 = []
 
         jaccard_0 = 0
@@ -422,6 +494,11 @@ class CamoSam(L.LightningModule):
 
         for each_output, each_input in zip(output["masks"], batch):
             # total_objects += selector.sum()
+            prompt_point.append(each_input.get('point_coords',None))
+            prompt_label.append(each_input.get('point_labels',None))
+            prompt_mask.append(each_input.get('mask_input',None))
+            img_shapes.append(each_input.get('image',None).shape)
+            
             gt_mask = each_input['gt_mask']
             sep_mask_list_0.append(each_output>0.5)
             sep_gt_mask_list_0.append(gt_mask.type(torch.int8))
@@ -438,7 +515,7 @@ class CamoSam(L.LightningModule):
             mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
             mask_list_0.append(mask)
 
-            # img_list_0.append(cropped_img[0])
+            img_list_0.append(each_input["org_img"])
         metrics_all = {'Metrics/val/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/val/dice_single_obj_0': dice_0 / total_objects}
 
         # if self.cfg.dataset.stage1:
@@ -463,9 +540,7 @@ class CamoSam(L.LightningModule):
 
         #     metrics_all.update({'Metrics/val/jaccard_single_obj_1': jaccard_1 / total_objects, 'Metrics/val/dice_single_obj_1': dice_1 / total_objects})
 
-        # self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+        self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
 
-        # if self.cfg.dataset.stage1:
-        #     self.log_images_1(batch['info'], img_list_0, img_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, gt_mask_list_0, gt_mask_list_1, output['iou_0'], output['iou_1'], batch_idx=batch_idx, train=False)
-        # else:
-        # self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=False)
+
+        self.log_images(img_list_0, sep_mask_list_0, sep_gt_mask_list_0, output['iou'], prompt_point, prompt_label, prompt_mask, img_shapes,  batch_idx=batch_idx, train=False)
