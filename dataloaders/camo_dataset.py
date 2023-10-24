@@ -293,7 +293,7 @@ class VideoDataset(data.Dataset):
             imgs = colorEnhance(imgs)
             # all_gt = randomPeper(all_gt) # SERIOUSLY WHY DO WE NEED THIS ?????????????
 
-        img_copy = np.asarray(imgs).copy()   
+        img_copy = np.asarray(imgs).copy() 
         imgs = torch.as_tensor(
                 self.transform.apply_image(np.array(imgs, dtype=np.uint8))
             ).permute(2, 0, 1)
@@ -317,7 +317,7 @@ class VideoDataset(data.Dataset):
         all_point_prompt = None
         all_label_prompt = None
         all_mask_prompt = None
-
+        all_point_prompt_original = None
 
 
         is_mask_prompt = random.choice([True, False])
@@ -329,6 +329,7 @@ class VideoDataset(data.Dataset):
             n_prompt_points = self.n_points
             all_point_prompt = []
             all_label_prompt = []
+            all_point_prompt_original = []
             
         if is_mask_prompt:
             all_mask_prompt = []
@@ -413,9 +414,11 @@ class VideoDataset(data.Dataset):
                         point_prompt = np.asarray(point_prompt)  
                         label_prompt = np.asarray([1])
                         # print(point_prompt)
-
+                    
+                    print(point_prompt)
                     all_point_prompt.append(torch.as_tensor(self.transform.apply_coords(point_prompt,  all_gt_copy[0].shape), dtype=torch.float))
                     all_label_prompt.append(torch.as_tensor(label_prompt, dtype=torch.int))
+                    all_point_prompt_original.append(torch.as_tensor(point_prompt , dtype = torch.float))
 
             if ((point_prompt is None) and is_point_prompt) or ((mask_prompt is None) and is_mask_prompt):
                 return self.__getitem__(index+1)
@@ -435,10 +438,11 @@ class VideoDataset(data.Dataset):
        
         return {
             "image": imgs, # Tensor(3, H (transformed), 1024)
-            "org_img": img_copy, # numpy array (H, W, 3)
+            "org_img":img_copy,
             "gt_mask":  torch.stack(all_gt_copy), # Tensor(n, H, W)
             "original_size": all_gt_copy[0].shape, # List (H,W) - [720, 1280]
-            "point_coords": torch.stack(all_point_prompt, dim=0) if all_point_prompt is not None else None, # torch Tensor (B, N,2) - 
+            "point_coords": torch.stack(all_point_prompt, dim=0) if all_point_prompt is not None else None, # torch Tensor (B, N,2),
+            "point_coords_original": torch.flip(torch.stack(all_point_prompt_original,dim=0),dims=(2,)) if all_point_prompt_original is not None else None,
             "point_labels": torch.stack(all_label_prompt, dim=0) if all_label_prompt is not None else None, # torch Tensor (B, N,)
             "mask_inputs": torch.stack(all_mask_prompt, dim=0).unsqueeze(1) if all_mask_prompt is not None else None, # torch Tensor (H, W) -> ideally requires 256,256 which is done inside forward pass for logging purposes
             "info":info,
