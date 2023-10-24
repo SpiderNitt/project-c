@@ -17,7 +17,7 @@ import lightning as L
 import torchmetrics
 import wandb
 import gc
-
+import matplotlib.pyplot as plt
 from torchvision.transforms.functional import resize, to_pil_image  # type: ignore
 
 class CamoSam(L.LightningModule):
@@ -47,9 +47,9 @@ class CamoSam(L.LightningModule):
 
         self.set_requires_grad()
 
-        for n,p in self.model.named_parameters():
-            if p.requires_grad:
-                print(n)
+        # for n,p in self.model.named_parameters():
+        #     if p.requires_grad:
+        #         print(n)
                 
         self.epoch_freq = self.cfg.train_metric_interval
         
@@ -61,18 +61,21 @@ class CamoSam(L.LightningModule):
     def set_requires_grad(self):
         model_grad = self.cfg.model.requires_grad
 
-        for name,param in self.model.image_encoder.named_parameters():
-            if 'adapter' in name:
+        for name,param in self.model.named_parameters():
+            if 'adapter' in name or 'feature_extractor' in name or 'dwt' in name:
                 param.requires_grad = True
             
             else:
-                param.requires_grad = model_grad.image_encoder
+                param.requires_grad = False
 
-        for param in self.model.prompt_encoder.parameters():
-            param.requires_grad = model_grad.prompt_encoder
+        # for param in self.model. image_encoder.parameters():
+        #     param.requires_grad = False
 
-        for param in self.model.mask_decoder.parameters():
-            param.requires_grad = model_grad.mask_decoder
+        # for param in self.model.prompt_encoder.parameters():
+        #     param.requires_grad = model_grad.prompt_encoder
+
+        # for param in self.model.mask_decoder.parameters():
+        #     param.requires_grad = model_grad.mask_decoder
         
         # for param in self.model.propagation_module.parameters():
         #     param.requires_grad = model_grad.propagation_module
@@ -108,32 +111,42 @@ class CamoSam(L.LightningModule):
         return check_idx % self.epoch_freq == 0
 
     @torch.no_grad()
-    def log_images_0(self, information, img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, iou_list_0, batch_idx, train=True):
+    def log_images(self, information, img_list, sep_mask_list, mask_list, gt_mask_list, iou_list,prompt_point,prompt_label,prompt_mask, batch_idx, train=True):
         for info, img, sep_mask, mask, gt, iou in zip(information, img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, iou_list_0):
-            mask_dict = {}
-            mask_dict["ground_truth"] = {"mask_data" : gt.cpu().numpy()}
-            mask_dict["prediction"] = {"mask_data" : mask.cpu().numpy()}
-            for obj_index, (pred_obj, iou_obj) in enumerate(zip(sep_mask, iou)):
-                mask_dict[f"prediction_{obj_index + 1}"] = {"mask_data" : pred_obj.cpu().numpy() * (obj_index + 1)}
-            self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img], step=self.global_step, masks=[mask_dict], 
-                                  caption=[f"Epoch_{self.current_epoch}_IoU_{iou_obj.cpu().item(): 0.3f}_Frames_{info['frames']}"])
-
-    # @torch.no_grad()
-    # def log_images_1(self, information, img_list_0, img_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, gt_mask_list_0, gt_mask_list_1, iou_list_0, iou_list_1, batch_idx, train=True):
-    #     for info, img_0, img_1, gt_0, gt_1, sep_mask_0, sep_mask_1, mask_0, mask_1, iou_0, iou_1 in zip(information, img_list_0, img_list_1, gt_mask_list_0, gt_mask_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, iou_list_0, iou_list_1):
-    #         mask_dict_0 = {}
-    #         mask_dict_0["ground_truth"] = {"mask_data" : gt_0.cpu().numpy()}
-    #         mask_dict_0["prediction"] = {"mask_data" : mask_0.cpu().numpy()}
-    #         mask_dict_1 = {}
-    #         mask_dict_1["ground_truth"] = {"mask_data" : gt_1.cpu().numpy()}
-    #         mask_dict_1["prediction"] = {"mask_data" : mask_1.cpu().numpy()}
-    #         for obj_index, (sep_obj_0, sep_obj_1, iou_obj_0, iou_obj_1) in enumerate(zip(sep_mask_0, sep_mask_1, iou_0, iou_1)):
-    #             mask_dict_0[f"prediction_{obj_index + 1}"] = {"mask_data" : sep_obj_0.cpu().numpy() * (obj_index + 1)}
-    #             mask_dict_1[f"prediction_{obj_index + 1}"] = {"mask_data" : sep_obj_1.cpu().numpy() * (obj_index + 1)}
+            prompt_mask = prompt_mask * 255
+            table = wandb.Table(columns=['Image'])
+            for img, gt, pred, point, mask in zip(img_list, gt_list, mask_list, prompt_point, prompt_mask):
+                gt[gt!=0] = 255
+                pred[pred!=0] = 200
+                log_masks = {
+				"prediction" : { "mask_data" : pred,}, "ground truth" : {"mask_data" : gt}, 
+			}
+            if mask is not None:
+                mask[mask!=0] = 150
+                log_masks["mask prompt"] : {"mask_data" : mask}
+                mask_img = wandb.Image(img, masks=log_masks)
+                table.add_data(mask_img)
+                
+            if point is not None:
+                point_as_mask = np.zeros((pred.shape))
+                for coords in point:
+                    point_as_mask = cv2.circle(point_as_mask, coords, radius=10, color=100, thickness=-1)
+                    point_as_mask[point_as_mask!=0] = 100
+                    log_masks["point prompt"] = {"mask_data": point_as_mask}
+            if train:
+                wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Train" : table})
             
-    #         self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img_0, img_1], step=self.global_step, masks=[mask_dict_0, mask_dict_1],
-    #                               caption=[f"Epoch_{self.current_epoch}_IoU_{iou_obj_0.cpu().item(): 0.3f}_Frame_{info['frames'][0]}_{info['frames'][1]}", f"Epoch_{self.current_epoch}_IoU_{iou_obj_1.cpu().item(): 0.3f}_Frame_{info['frames'][1]}_{info['frames'][2]}"])
-   
+            else:
+                wandb.log({f"Images/Epoch:{self.current_epoch}/{batch_idx}_Validation" : table})
+                # mask_dict = {}
+                # mask_dict["ground_truth"] = {"mask_data" : gt.cpu().numpy()}
+                # mask_dict["prediction"] = {"mask_data" : mask.cpu().numpy()}
+                # for obj_index, (pred_obj, iou_obj) in enumerate(zip(sep_mask, iou)):
+                #     mask_dict[f"prediction_{obj_index + 1}"] = {"mask_data" : pred_obj.cpu().numpy() * (obj_index + 1)}
+                # self.logger.log_image(f"Images/{'train' if train else 'val'}/{info['name']}", [img], step=self.global_step, masks=[mask_dict], 
+                #                     caption=[f"Epoch_{self.current_epoch}_IoU_{iou_obj.cpu().item(): 0.3f}_Frames_{info['frames']}"])
+
+
     def sigmoid_focal_loss(
         self,
         inputs: torch.Tensor,
@@ -240,22 +253,31 @@ class CamoSam(L.LightningModule):
         iou_pred_list = []
         total_num_objects = 1
 
-        for each_output, each_input in zip(output, batch ):
+        for each_output, each_input in zip(output, batch):
             # print(batch['gt_mask'].shape)
             # total_num_objects += selector.sum()
             # print(pred_masks.shape)
             pred_masks = each_output["masks"] # [1, H, W]
+            print(f'pred_masks {pred_masks.shape}')
+            # plt.subplot(1,2,1)
+            # plt.imshow(pred_masks[0][0].detach().cpu())
+            # plt.show()
             # pred_masks_list.append(pred_masks.detach())
             # pred_masks = pred_masks[selector] # [num_true_obj, H, W]
             gt_mask = each_input['gt_mask'] # [num_obj, H, W] # gt_mask[0] to get the 0th mask from the prediction
-                        
-            pred_masks_sigmoid = torch.sigmoid(pred_masks)
-            pred_masks_list.append(pred_masks_sigmoid.detach())
-            iou_pred_list.append(each_output["iou_predictions"].reshape(-1).detach())
+            print(f'gt_mask {gt_mask.shape}')
+            # if gt_mask[0]>1:
+            #     plt.subplot(1,2,2)
+            #     plt.imshow(gt_mask[0].shape)
             
-            loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
-            loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)
-            loss_iou += F.mse_loss(
+            pred_masks_sigmoid = torch.sigmoid(pred_masks)
+            pred_masks_list.append(pred_masks_sigmoid)
+            iou_pred_list.append(each_output["iou_predictions"].reshape(-1))
+            
+            loss_focal = loss_focal + self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
+            # print(f'loss_focal {loss_focal.requires_grad}')
+            loss_dice = loss_dice + self.dice_loss(pred_masks_sigmoid, gt_mask)
+            loss_iou = loss_iou + F.mse_loss(
                 each_output["iou_predictions"].reshape(-1), self.iou(pred_masks_sigmoid, gt_mask), reduction="sum"
             )
 
@@ -271,7 +293,7 @@ class CamoSam(L.LightningModule):
             "Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou,
         }
 
-        self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
+        # self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
 
         return {'loss': loss_total, 'masks': pred_masks_list,  'iou': iou_pred_list} # List([num_true_obj, H, W])
     
@@ -301,6 +323,7 @@ class CamoSam(L.LightningModule):
             # total_num_objects += selector.sum()
             # print(pred_masks.shape)
             pred_masks = each_output["masks"] # [1, H, W]
+            # print(f'pre_masks{pred_masks.shape}')
             # pred_masks_list.append(pred_masks.detach())
             # pred_masks = pred_masks[selector] # [num_true_obj, H, W]
             gt_mask = each_input['gt_mask'] # [num_obj, H, W] # gt_mask[0] to get the 0th mask from the prediction
@@ -328,7 +351,7 @@ class CamoSam(L.LightningModule):
         avg_iou = loss_iou / (total_num_objects)
 
         self.val_benchmark.append(loss_total.item())
-        self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
+        # self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
 
         return {'loss': loss_total, 'masks': pred_masks_list, 'iou': iou_pred_list} # List([num_true_obj, H, W])
     
@@ -372,12 +395,12 @@ class CamoSam(L.LightningModule):
                 # img_list_0.append(cropped_img[0])
                 metrics_all = {'Metrics/train/jaccard_single_obj_0': jaccard_0 / total_objects, 'Metrics/train/dice_single_obj_0': dice_0 / total_objects}
 
-                metrics_all.update({'Metrics/train/jaccard_single_obj_1': jaccard_1 / total_objects, 'Metrics/train/dice_single_obj_1': dice_1 / total_objects})
+                metrics_all.update({'Metrics/train/jaccard_single': jaccard_0 / total_objects, 'Metrics/train/dice_single': dice_0 / total_objects})
 
-            self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+            # self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
             
-            if batch_idx < 5:
-                    self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=True)
+            # if batch_idx < 5:
+                    # self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=True)
     
     def on_validation_batch_end(self, output, batch, batch_idx):
         img_list_0 = []
@@ -440,9 +463,9 @@ class CamoSam(L.LightningModule):
 
         #     metrics_all.update({'Metrics/val/jaccard_single_obj_1': jaccard_1 / total_objects, 'Metrics/val/dice_single_obj_1': dice_1 / total_objects})
 
-        self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+        # self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
 
         # if self.cfg.dataset.stage1:
         #     self.log_images_1(batch['info'], img_list_0, img_list_1, sep_mask_list_0, sep_mask_list_1, mask_list_0, mask_list_1, gt_mask_list_0, gt_mask_list_1, output['iou_0'], output['iou_1'], batch_idx=batch_idx, train=False)
         # else:
-        self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=False)
+        # self.log_images_0(each_input['info'], img_list_0, sep_mask_list_0, mask_list_0, gt_mask_list_0, output['iou'], batch_idx=batch_idx, train=False)
