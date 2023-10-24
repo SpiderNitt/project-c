@@ -322,7 +322,6 @@ class VideoDataset(data.Dataset):
 
         is_mask_prompt = random.choice([True, False])
         is_point_prompt = random.choice([True, False]) if is_mask_prompt else True #atleast one of them
-        is_mask_prompt = is_point_prompt = True
         
         if is_point_prompt:
             self.n_points+=1
