@@ -14,7 +14,7 @@ from .image_encoder import ImageEncoderViT
 from .mask_decoder import MaskDecoder
 from .prompt_encoder import PromptEncoder
 
-
+import numpy as np
 class Sam(nn.Module):
     mask_threshold: float = 0.0
     image_format: str = "RGB"
@@ -109,10 +109,14 @@ class Sam(nn.Module):
             else:
                 points = None
             
+            masks = image_record.get("mask_inputs",None)
+            if masks is not None:
+              masks = (masks-0.5)*20
+              # print(np.unique(masks.cpu()))
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 points=points,
                 boxes=image_record.get("boxes", None),
-                masks=image_record.get("mask_inputs", None),
+                masks=masks,
             )
             low_res_masks, iou_predictions = self.mask_decoder(
                 image_embeddings=curr_embedding.unsqueeze(0),

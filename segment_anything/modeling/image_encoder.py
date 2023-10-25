@@ -259,7 +259,7 @@ class ImageEncoderViT(nn.Module):
             # print(f'blk_input {x.shape}') #[B,64,64,768]
             x = blk(x)
             # print(f'blk_output {x.shape}') #[B,64,64,768]
-            extracted_features = torch.randn((1,64,64,1024),device = 'cuda')
+            
             adapter_output = x + adapter(extracted_features.permute(0,3,2,1)).permute(0,3,2,1)
             extracted_features = adapter_output
 
