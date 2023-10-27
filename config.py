@@ -1,7 +1,7 @@
 from omegaconf import OmegaConf
 
 cfg = {
-    "description": "Positional embed before cross attention and affinity. Added extra affinity module. Each Pos_embed_wt has shape (256)",
+    "description": "Multimask=True. Positional embed before cross attention and affinity. Added extra affinity module. Each Pos_embed_wt has shape (256)",
     "precision": "32",
     "num_devices": 1,
     "num_epochs": 100,
@@ -30,6 +30,7 @@ cfg = {
             "mask_decoder": False,
             "propagation_module": True,
         },
+        "multimask_output": True,
         "propagation_ckpt": None,
     },
     "dataset": {

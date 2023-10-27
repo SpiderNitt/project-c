@@ -59,6 +59,106 @@ class Sam(nn.Module):
     @property
     def device(self) -> Any:
         return self.pixel_mean.device
+    
+    def getImageEmbeddings(self, input_images):
+        self.image_encoder.eval()
+        with torch.no_grad():
+            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(input_images), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
+        return image_embeddings
+    
+    # Propagation stage 0
+    def getPropEmbeddings0(self, image_embeddings, batched_input, multimask_output):
+        prev_masks = batched_input["prev_masks"] # (B, F=2/1, P=3, 256, 256)
+        prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
+        _, mask_embeddings = self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
+        mask_embeddings = mask_embeddings.view(len(image_embeddings), -1, self.max_num_obj, 256, 64, 64) # (B, F=2/1, P=3, 256, 64, 64)
+        
+        pos_embed = self.prompt_encoder.get_dense_pe() # (256, 64, 64)
+        # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
+        embeddings = {"image_embeddings": image_embeddings[:, :(2 if self.cfg.dataset.stage1 else 3)], "mask_embeddings": mask_embeddings}
+        
+        all_sparse_embeddings, all_dense_embeddings, prop_pos_embed = self.propagation_module(
+            embeddings, pos_embed
+        )  # (B, P=3, 64, 64, 256)
+        all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (B, P=3, 256, 64, 64)
+
+        low_res_pred = []
+        outputs = []
+        for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, (-2 if self.cfg.dataset.stage1 else -1)], all_sparse_embeddings, all_dense_embeddings)):
+            # curr_embedding: (256, 64, 64) -> current target frame embedding
+            # prop_dense_embeddings: (3, 256, 64, 64) -> basically we have 3 prompts
+            # prop_sparse_embeddings: (3, 8, 256) -> basically we have 3 prompts, each prompt has 8 points
+            
+            low_res_masks, iou_predictions = self.mask_decoder(
+                image_embeddings=curr_embedding.unsqueeze(0),
+                image_pe=pos_embed,
+                sparse_prompt_embeddings=prop_sparse_embeddings,
+                dense_prompt_embeddings=prop_dense_embeddings,
+                multimask_output=multimask_output,
+            )
+            low_res_pred.append(low_res_masks) # (P=3, C, 256, 256)
+            masks = self.postprocess_masks(
+                low_res_masks,
+                input_size=list(batched_input["resize_longest_size"][i]),
+                original_size=list(batched_input["original_size"][i])
+            )
+            outputs.append(
+                {
+                    "masks": masks, # (P=3, C, H, W)
+                    "iou_predictions": iou_predictions, # (P=3, C)
+                    "low_res_logits": low_res_masks, # (P=3, C, 256, 256)
+                }
+            )
+        
+        low_res_pred = torch.stack(low_res_pred, 0)
+        return outputs, low_res_pred, prop_pos_embed
+    
+    # Propagation stage 1
+    def getPropEmbeddings1(self, image_embeddings, batched_input, low_res_pred, multimask_output):
+        prev_masks = batched_input["prev_masks"] # (B, F=2/1, P=3, 256, 256)
+        low_res_pred = (low_res_pred > self.mask_threshold).float() # (B, 1, P=3, 256, 256)
+        prev_masks = torch.cat([prev_masks, low_res_pred], dim=1) # (B, [F-1]=2, P=3, 256, 256)
+
+        prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
+        _, mask_embeddings = self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
+        mask_embeddings = mask_embeddings.view(len(batched_input["selector"]), prev_masks.shape[1], self.max_num_obj, 256, 64, 64) # (B, [F-1]=2, P=3, 256, 64, 64)
+
+        pos_embed = self.prompt_encoder.get_dense_pe() # (256, 64, 64)
+        # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
+        embeddings = {"image_embeddings": image_embeddings, "mask_embeddings": mask_embeddings}
+        
+        all_sparse_embeddings, all_dense_embeddings, _ = self.propagation_module(
+            embeddings, pos_embed
+        )  # (B, P=3, 64, 64, 256)
+        all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (B, P=3, 256, 64, 64)
+
+        outputs = []
+        for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, -1], all_sparse_embeddings, all_dense_embeddings)):
+            # curr_embedding: (256, 64, 64) -> current target frame embedding
+            # prop_dense_embeddings: (3, 256, 64, 64) -> basically we have 3 prompts
+            # prop_sparse_embeddings: (3, 8, 256) -> basically we have 3 prompts, each prompt has 8 points
+            
+            low_res_masks, iou_predictions = self.mask_decoder(
+                image_embeddings=curr_embedding.unsqueeze(0),
+                image_pe=pos_embed,
+                sparse_prompt_embeddings=prop_sparse_embeddings,
+                dense_prompt_embeddings=prop_dense_embeddings,
+                multimask_output=multimask_output,
+            )
+            masks = self.postprocess_masks(
+                low_res_masks,
+                input_size=list(batched_input["resize_longest_size"][i]),
+                original_size=list(batched_input["original_size"][i])
+            )
+            outputs.append(
+                {
+                    "masks": masks, # (P=3, C, H, W)
+                    "iou_predictions": iou_predictions, # (P=3, C)
+                    "low_res_logits": low_res_masks, # (P=3, C, 256, 256)
+                }
+            )
+            
+        return outputs
 
     def forward(
         self,
@@ -145,7 +245,7 @@ class Sam(nn.Module):
                 dense_prompt_embeddings=prop_dense_embeddings,
                 multimask_output=multimask_output,
             )
-            low_res_pred.append(low_res_masks.squeeze(1).unsqueeze(0)) # (P=3, 1, 256, 256) -> (1, P=3, 256, 256)
+            low_res_pred.append(low_res_masks.unsqueeze(0)) # (P=3, C, 256, 256) -> (1, P=3, C, 256, 256)
             masks = self.postprocess_masks(
                 low_res_masks,
                 input_size=list(batched_input["resize_longest_size"][i]),
@@ -153,29 +253,31 @@ class Sam(nn.Module):
             )
             outputs_0.append(
                 {
-                    "masks": masks.squeeze(1), # (P=3, 1, H, W) -> (P=3, H, W)
-                    "iou_predictions": iou_predictions, # (P=3, 1)
-                    "low_res_logits": low_res_masks, # (P=3, 1, 256, 256)
+                    "masks": masks, # (P=3, C, H, W)
+                    "iou_predictions": iou_predictions, # (P=3, C)
+                    "low_res_logits": low_res_masks, # (P=3, C, 256, 256)
                 }
             )
         
         if not self.cfg.dataset.stage1:
             return outputs_0, None, prop_pos_embed
 
-        low_res_pred = (torch.stack(low_res_pred, dim=0) > self.mask_threshold).float() # (B, 1, 3, 256, 256)
-        prev_masks_1 = torch.cat([prev_masks_1, low_res_pred], dim=1) # (B, [F-1]=2, P=3, 256, 256)
+        low_res_pred = (torch.stack(low_res_pred, dim=0) > self.mask_threshold).float() # (B, 1, 3, C, 256, 256)
+        prev_masks_1 = prev_masks_1.unsqueeze(-3) # (B, F=1, P=3, 1, 256, 256)
+        prev_masks_1 = prev_masks_1.repeat(1, 1, 1, low_res_pred.shape[-3], 1, 1) # (B, F=1, P=3, C, 256, 256)
+        prev_masks_1 = torch.cat([prev_masks_1, low_res_pred], dim=1) # (B, [F-1]=2, P=3, C, 256, 256)
 
         prev_masks_1 = prev_masks_1.view(-1, 1, *prev_masks_1.shape[-2:])
         _, mask_embeddings_1 = self.prompt_encoder(points=None, boxes=None, masks=prev_masks_1)
-        mask_embeddings_1 = mask_embeddings_1.view(len(batched_input["selector"]), -1, self.max_num_obj, 256, 64, 64) # (B, [F-1]=2, P=3, 256, 64, 64)
+        mask_embeddings_1 = mask_embeddings_1.view(len(batched_input["selector"]), prev_masks_1.shape[1], self.max_num_obj * prev_masks_1.shape[-3], 256, 64, 64) # (B, [F-1]=2, P=3 * C, 256, 64, 64)
         
         # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
         embeddings_1 = {"image_embeddings": image_embeddings, "mask_embeddings": mask_embeddings_1}
         
         all_sparse_embeddings_1, all_dense_embeddings_1, _ = self.propagation_module(
             embeddings_1, pos_embed
-        )  # (B, P=3, 64, 64, 256)
-        all_dense_embeddings_1 = all_dense_embeddings_1.permute(0, 1, 4, 2, 3) # (B, P=3, 256, 64, 64)
+        )  # (B, P=3 * C, 64, 64, 256)
+        all_dense_embeddings_1 = all_dense_embeddings_1.permute(0, 1, 4, 2, 3) # (B, P=3 * C, 256, 64, 64)
 
         outputs_1 = []
         for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, -1], all_sparse_embeddings_1, all_dense_embeddings_1)):
