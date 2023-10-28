@@ -65,7 +65,7 @@ class InferCallback(Callback):
             pl_module.model.eval()
             with torch.inference_mode():
                 for video in val_list:
-                    infer(pl_module.model, pl_module.device, video, self.cfg.dataset, f'{self.version}/epoch_{pl_module.current_epoch + 1}')
+                    infer(pl_module.model, pl_module.device, video, self.cfg.dataset, f'{self.version}/epoch_{pl_module.current_epoch + 1}', self.cfg.model.multimask_output)
             pl_module.model.train()
 
             os.system(f'cd DAVIS-evaluation; export PYTHONPATH=$(pwd)/python/lib; python python/tools/eval.py -i data/DAVIS/Predictions/{self.version}/epoch_{pl_module.current_epoch + 1} -o Results/{self.version}/epoch_{pl_module.current_epoch + 1}.yaml --year 2017 --phase val')

@@ -19,13 +19,16 @@ path  = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
 
 ckpt = None
-# api = wandb.Api()
-# artifact = api.artifact('spider-r-d/DAVIS Propagation/model_cyzxvd5f:v26', type='model')
-# artifact_dir = artifact.download()
 
-# ckpt = torch.load('artifacts/model_cyzxvd5f:v26/499_epoch_7500_global_step.pth')
-if cfg.model.propagation_ckpt is not None:
-    ckpt = torch.load(cfg.model.propagation_ckpt)
+if cfg.model.propagation_ckpt:
+    if 'artifacts' in cfg.model.propagation_ckpt:
+        api = wandb.Api()
+        artifact = api.artifact('spider-r-d/Common Propagation/model_cyzxvd5f:v26', type='model')
+        artifact_dir = artifact.download()
+
+        ckpt = torch.load('artifacts/model_cyzxvd5f:v26/499_epoch_7500_global_step.pth')
+    elif cfg.model.propagation_ckpt:
+        ckpt = torch.load(cfg.model.propagation_ckpt)
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -39,10 +42,12 @@ lr_monitor = LearningRateMonitor(logging_interval='epoch')
 model_weight_callback = WandB_Logger(cfg, wandblogger)
 infer_callback = InferCallback(cfg, wandblogger)
 
+callbacks = [ModelSummary(max_depth=3), lr_monitor, model_weight_callback, infer_callback] if "davis" in cfg.dataset.name else [ModelSummary(max_depth=3), lr_monitor, model_weight_callback]
+
 trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
-    callbacks=[ModelSummary(max_depth=3), lr_monitor, model_weight_callback, infer_callback],
+    callbacks=callbacks,
     precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,

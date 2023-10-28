@@ -111,7 +111,7 @@ class Sam(nn.Module):
             )
         
         low_res_pred = torch.stack(low_res_pred, 0)
-        return outputs, low_res_pred, prop_pos_embed
+        return outputs, low_res_pred, prop_pos_embed, all_dense_embeddings
     
     # Propagation stage 1
     def getPropEmbeddings1(self, image_embeddings, batched_input, low_res_pred, multimask_output):
@@ -121,7 +121,7 @@ class Sam(nn.Module):
 
         prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
         _, mask_embeddings = self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
-        mask_embeddings = mask_embeddings.view(len(batched_input["selector"]), prev_masks.shape[1], self.max_num_obj, 256, 64, 64) # (B, [F-1]=2, P=3, 256, 64, 64)
+        mask_embeddings = mask_embeddings.view(len(batched_input["selector"]), -1, self.max_num_obj, 256, 64, 64) # (B, [F-1]=2, P=3, 256, 64, 64)
 
         pos_embed = self.prompt_encoder.get_dense_pe() # (256, 64, 64)
         # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}

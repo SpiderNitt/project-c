@@ -207,7 +207,7 @@ class CamoSam(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         img_embeddings = self.model.getImageEmbeddings(batch['image']) # (B, F=3, 256, 64, 64)
-        output_0, low_res_pred, prop_pos_embed = self.model.getPropEmbeddings0(img_embeddings, batch, multimask_output=self.cfg.model.multimask_output)
+        output_0, low_res_pred, prop_pos_embed, prop_dense_embed = self.model.getPropEmbeddings0(img_embeddings, batch, multimask_output=self.cfg.model.multimask_output)
 
         pred_masks_list_0 = []
         iou_pred_list_0 = []
@@ -280,7 +280,7 @@ class CamoSam(L.LightningModule):
                 ) # [P, C]
 
                 loss_tmp, min_idx = torch.min(loss_tmp, -1) # [P]
-                loss_total += loss_tmp[selector] # (num_true_obj)
+                loss_total += loss_tmp[selector].sum() # (num_true_obj)
                 batch_indexing = torch.arange(len(min_idx), device=min_idx.device) # [P]
                 loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)[batch_indexing, min_idx][selector].sum()
                 loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)[batch_indexing, min_idx][selector].sum()
@@ -302,7 +302,8 @@ class CamoSam(L.LightningModule):
         log_dict = {
             "Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou,
             "pos_embed_attn_wt/min": pos_embed_attn_wt.min(), "pos_embed_attn_wt/max": pos_embed_attn_wt.max(), "pos_embed_attn_wt/mean": pos_embed_attn_wt.mean(), "pos_embed_attn_wt/std": pos_embed_attn_wt.std(),
-            "pos_embed_affinity_wt/min": pos_embed_affinity_wt.min(), "pos_embed_affinity_wt/max": pos_embed_affinity_wt.max(), "pos_embed_affinity_wt/mean": pos_embed_affinity_wt.mean(), "pos_embed_affinity_wt/std": pos_embed_affinity_wt.std()
+            "pos_embed_affinity_wt/min": pos_embed_affinity_wt.min(), "pos_embed_affinity_wt/max": pos_embed_affinity_wt.max(), "pos_embed_affinity_wt/mean": pos_embed_affinity_wt.mean(), "pos_embed_affinity_wt/std": pos_embed_affinity_wt.std(),
+            "prop_dense_embed/min": prop_dense_embed.min(), "prop_dense_embed/max": prop_dense_embed.max(), "prop_dense_embed/mean": prop_dense_embed.mean(), "prop_dense_embed/std": prop_dense_embed.std()
         }
 
         self.log_dict(log_dict, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
@@ -311,7 +312,7 @@ class CamoSam(L.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         img_embeddings = self.model.getImageEmbeddings(batch['image']) # (B, F=3, 256, 64, 64)
-        output_0, low_res_pred, prop_pos_embed = self.model.getPropEmbeddings0(img_embeddings, batch, multimask_output=self.cfg.model.multimask_output)
+        output_0, low_res_pred, _, _ = self.model.getPropEmbeddings0(img_embeddings, batch, multimask_output=self.cfg.model.multimask_output)
 
         pred_masks_list_0 = []
         iou_pred_list_0 = []
@@ -384,7 +385,7 @@ class CamoSam(L.LightningModule):
                 ) # [P, C]
 
                 loss_tmp, min_idx = torch.min(loss_tmp, -1) # [P]
-                loss_total += loss_tmp[selector] # (num_true_obj)
+                loss_total += loss_tmp[selector].sum() # (num_true_obj)
                 batch_indexing = torch.arange(len(min_idx), device=min_idx.device) # [P]
                 loss_focal += self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)[batch_indexing, min_idx][selector].sum()
                 loss_dice += self.dice_loss(pred_masks_sigmoid, gt_mask)[batch_indexing, min_idx][selector].sum()

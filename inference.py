@@ -43,7 +43,7 @@ class Memory():
         # (F, P, 256, 256)
         return torch.stack(self.mask, dim=0)
 
-def infer(model, device, video_name, cfg, folder_name):
+def infer(model, device, video_name, cfg, folder_name, multimask_output=True):
     memory = Memory(length=3)
 
     pred_dir = Path(os.path.join(cfg.root_dir, 'DAVIS/Predictions', folder_name))
@@ -83,25 +83,30 @@ def infer(model, device, video_name, cfg, folder_name):
             image_pe=pos_embed,
             sparse_prompt_embeddings=all_sparse_embeddings[0],
             dense_prompt_embeddings=all_dense_embeddings[0],
-            multimask_output=False,
-        )
+            multimask_output=multimask_output,
+        ) # (P, C, 256, 256)
+        max_iou, max_index = torch.max(iou_predictions, -1)
+        batch_indexing = torch.arange(len(max_index), device=max_index.device)
+
         masks = model.postprocess_masks(
             low_res_masks,
             input_size=(input_size[0]*4, input_size[1]*4), # Since mask was longest resized to 256 and not 1024
             original_size=original_size
         )
-        
+        low_res_masks = low_res_masks[batch_indexing, max_index] # (P, 256, 256)
+        masks = masks[batch_indexing, max_index] # (P, 256, 256)
+
         masks = masks.detach().cpu()
         max_, max_pos = torch.max(masks, dim=0)
         masks = ((max_pos+1) * (max_ > 0)).type(torch.int8)
 
-        masks = masks[0].cpu().numpy().astype(np.uint8)
+        masks = masks.cpu().numpy().astype(np.uint8)
 
         masks = Image.fromarray(masks).convert("P")
         masks.putpalette(palette)
         masks.save(pred_dir / video_name / f'{i:05}.png')
         
-        memory.add(current_frame_embeddings.cpu(), (low_res_masks.squeeze(1) > 0).cpu().float(), iou_predictions.mean().cpu().item())
+        memory.add(current_frame_embeddings.cpu(), (low_res_masks > 0).cpu().float(), max_iou.mean().cpu().item())
 
     shutil.copy(first_gt_path, pred_dir / video_name)
 
