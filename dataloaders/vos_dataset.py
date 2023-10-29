@@ -237,10 +237,10 @@ class VOSDataset(Dataset):
         if self.cfg.stage1:
             data = {
                 'image': images, # (num_frames=3, 3, 1024, 1024) 
-                'gt_mask': all_frame_gt[-2:], # (num_frames=2, num_obj=3, H, W)
+                'gt_mask': all_frame_gt[1:], # (num_frames=2, num_obj=3, H, W)
                 'prev_masks': new_prev_frame_gt[:1], # (num_frames=1, num_obj=3, 256, 256)
                 'selector': selector, # (num_obj=3) Indicates if ith object exists
-                'cropped_img': cropped_img[-2:], # (num_frames=2, 3, H, W)
+                'cropped_img': cropped_img[1:], # (num_frames=2, 3, H, W)
                 'original_size': list(all_frame_gt.shape[-2:]),
                 'resize_longest_size': list(resize_longest_size),
                 'info': info

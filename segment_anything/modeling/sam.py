@@ -68,6 +68,8 @@ class Sam(nn.Module):
     
     # Propagation stage 0
     def getPropEmbeddings0(self, image_embeddings, batched_input, multimask_output):
+        if self.cfg.dataset.stage1:
+            prev_masks = batched_input["prev_masks"][:, :1] # (B, F=2/1, P=3, 256, 256)
         prev_masks = batched_input["prev_masks"] # (B, F=2/1, P=3, 256, 256)
         prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
         _, mask_embeddings = self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
@@ -75,7 +77,7 @@ class Sam(nn.Module):
         
         pos_embed = self.prompt_encoder.get_dense_pe() # (256, 64, 64)
         # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
-        embeddings = {"image_embeddings": image_embeddings[:, :(2 if self.cfg.dataset.stage1 else 3)], "mask_embeddings": mask_embeddings}
+        embeddings = {"current_frame_embeddings": image_embeddings[:, (1 if self.cfg.dataset.stage1 else -1)], "prev_frames_embeddings": image_embeddings[:, :(1 if self.cfg.dataset.stage1 else -1)], "mask_embeddings": mask_embeddings}
         
         all_sparse_embeddings, all_dense_embeddings, prop_pos_embed = self.propagation_module(
             embeddings, pos_embed
@@ -84,7 +86,7 @@ class Sam(nn.Module):
 
         low_res_pred = []
         outputs = []
-        for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, (-2 if self.cfg.dataset.stage1 else -1)], all_sparse_embeddings, all_dense_embeddings)):
+        for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, (1 if self.cfg.dataset.stage1 else -1)], all_sparse_embeddings, all_dense_embeddings)):
             # curr_embedding: (256, 64, 64) -> current target frame embedding
             # prop_dense_embeddings: (3, 256, 64, 64) -> basically we have 3 prompts
             # prop_sparse_embeddings: (3, 8, 256) -> basically we have 3 prompts, each prompt has 8 points
@@ -114,7 +116,7 @@ class Sam(nn.Module):
         return outputs, low_res_pred, prop_pos_embed, all_dense_embeddings
     
     # Propagation stage 1
-    def getPropEmbeddings1(self, image_embeddings, batched_input, low_res_pred, multimask_output):
+    def getPropEmbeddings1(self, image_embeddings, batched_input, low_res_pred, multimask_output, idx=2):
         prev_masks = batched_input["prev_masks"] # (B, F=2/1, P=3, 256, 256)
         low_res_pred = (low_res_pred > self.mask_threshold).float() # (B, 1, P=3, 256, 256)
         prev_masks = torch.cat([prev_masks, low_res_pred], dim=1) # (B, [F-1]=2, P=3, 256, 256)
@@ -125,7 +127,7 @@ class Sam(nn.Module):
 
         pos_embed = self.prompt_encoder.get_dense_pe() # (256, 64, 64)
         # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
-        embeddings = {"image_embeddings": image_embeddings, "mask_embeddings": mask_embeddings}
+        embeddings = {"current_frame_embeddings": image_embeddings[:, idx], "prev_frames_embeddings": image_embeddings[:, :idx], "mask_embeddings": mask_embeddings}
         
         all_sparse_embeddings, all_dense_embeddings, _ = self.propagation_module(
             embeddings, pos_embed
@@ -133,7 +135,8 @@ class Sam(nn.Module):
         all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (B, P=3, 256, 64, 64)
 
         outputs = []
-        for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, -1], all_sparse_embeddings, all_dense_embeddings)):
+        low_res_pred = []
+        for i, (curr_embedding, prop_sparse_embeddings, prop_dense_embeddings) in enumerate(zip(image_embeddings[:, idx], all_sparse_embeddings, all_dense_embeddings)):
             # curr_embedding: (256, 64, 64) -> current target frame embedding
             # prop_dense_embeddings: (3, 256, 64, 64) -> basically we have 3 prompts
             # prop_sparse_embeddings: (3, 8, 256) -> basically we have 3 prompts, each prompt has 8 points
@@ -145,6 +148,7 @@ class Sam(nn.Module):
                 dense_prompt_embeddings=prop_dense_embeddings,
                 multimask_output=multimask_output,
             )
+            low_res_pred.append(low_res_masks) # (P=3, C, 256, 256)
             masks = self.postprocess_masks(
                 low_res_masks,
                 input_size=list(batched_input["resize_longest_size"][i]),
@@ -157,8 +161,9 @@ class Sam(nn.Module):
                     "low_res_logits": low_res_masks, # (P=3, C, 256, 256)
                 }
             )
-            
-        return outputs
+
+        low_res_pred = torch.stack(low_res_pred, 0)
+        return outputs, low_res_pred
 
     def forward(
         self,
