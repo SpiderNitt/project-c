@@ -241,7 +241,9 @@ class VideoDataset(data.Dataset):
 
  
     def __getitem__(self, idx):
-        info = self.image_list[idx].split('/')[-1]
+        info = {}
+        info['name'] = self.image_list[idx].split('/')[-1]
+        info['frames'] = [0]*self.num_frames
         im = Image.open(self.image_list[idx]).convert('RGB')
         gt = Image.open(self.gt_list[idx]).convert('L')
         # plt.imshow(np.asarray(gt))
@@ -296,6 +298,8 @@ class VideoDataset(data.Dataset):
 
         target_objects = np.unique(masks[0]).tolist()
         target_objects.remove(0)
+        
+        info['num_objects'] = max(1, len(target_objects))
 
         H, W = tuple(masks.shape[1:])
         # Generate one-hot ground-truth
