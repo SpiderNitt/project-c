@@ -9,7 +9,7 @@ import os
 import wandb
 from pathlib import Path
 
-from dataloaders.vos_dataset import get_loader
+from dataloaders.camo_dataset import get_loader
 from callbacks import WandB_Logger, InferCallback
 from config import cfg
 
