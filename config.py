@@ -30,6 +30,7 @@ cfg = {
             "mask_decoder": False,
             "propagation_module": True,
         },
+        "multimask_output": True,
         "propagation_ckpt": None,
     },
     "dataset": {
