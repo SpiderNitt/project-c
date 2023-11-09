@@ -178,13 +178,13 @@ class VideoDataset(data.Dataset):
 
 
         self.pair_im_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=20, shear=10, interpolation=InterpolationMode.BICUBIC, fill=im_mean),
+            transforms.RandomAffine(degrees=20, shear=20, translate=(0.2,0.4), scale=(0.85, 1.15), interpolation=InterpolationMode.BICUBIC, fill=im_mean),
             # transforms.Resize(384, InterpolationMode.BICUBIC),
             # transforms.RandomCrop((384, 384), pad_if_needed=True, fill=im_mean),
         ])
 
         self.pair_gt_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=20, shear=10, interpolation=InterpolationMode.BICUBIC, fill=0),
+            transforms.RandomAffine(degrees=20, shear=20, translate=(0.2,0.4), scale=(0.85, 1.15), interpolation=InterpolationMode.BICUBIC, fill=0),
             # transforms.Resize(384, InterpolationMode.NEAREST),
             # transforms.RandomCrop((384, 384), pad_if_needed=True, fill=0),
         ])
@@ -192,18 +192,19 @@ class VideoDataset(data.Dataset):
 
         # These transform are the same for all pairs in the sampled sequence
         self.all_im_lone_transform = transforms.Compose([
-            # transforms.ColorJitter(0.1, 0.05, 0.05, 0.05),
-            transforms.RandomGrayscale(0.05),
+            transforms.ColorJitter((0.8,1.2), (0.8,1.2), (0.8,1.2), 0.15),
+            transforms.RandomGrayscale(0.5),
+            transforms.RandomHorizontalFlip(0.5)
         ])
 
         self.all_im_dual_transform = transforms.Compose([
             transforms.RandomAffine(degrees=0, scale=(0.8, 1.5), fill=im_mean),
-            transforms.RandomHorizontalFlip(),
+            transforms.RandomHorizontalFlip(0.5),
         ])
 
         self.all_gt_dual_transform = transforms.Compose([
             transforms.RandomAffine(degrees=0, scale=(0.8, 1.5), fill=0),
-            transforms.RandomHorizontalFlip(),
+            transforms.RandomHorizontalFlip(0.5),
         ])
 
         # Final transform without randomness
@@ -254,23 +255,34 @@ class VideoDataset(data.Dataset):
         images = []
         masks = []
         ids = []
+        reseed(sequence_seed)
+        this_im = self.all_im_dual_transform(im)
+        # print("===")
+        # print(np.mean(np.asarray(this_im)))
+        # plt.imshow(np.asarray(this_im))
+        # plt.show()
+        this_im_ = self.all_im_lone_transform(this_im)
+        # print("???")
+        # print(np.mean(np.asarray(this_im_)))
+        # plt.imshow(np.asarray(this_im_))
+        # plt.show()    
+        
+        reseed(sequence_seed)
+        this_gt_ = self.all_gt_dual_transform(gt)
+        
         num_objs = 0
         for _ in range(self.num_frames):
-            reseed(sequence_seed)
-            this_im = self.all_im_dual_transform(im)
-            this_im = self.all_im_lone_transform(this_im)
-            reseed(sequence_seed)
-            this_gt = self.all_gt_dual_transform(gt)
             
             pairwise_seed = np.random.randint(2147483647)
             reseed(pairwise_seed)
-            this_im = self.pair_im_dual_transform(this_im)
+            this_im = self.pair_im_dual_transform(this_im_)
             # this_im = self.pair_im_lone_transform(this_im)
             
-            this_gt = np.asarray(this_gt)
+            this_gt = np.asarray(this_gt_)
             ids = sorted(list(np.unique(this_gt)))
-            ids.remove(0)
-            num_objs = len(ids)
+            if 0 in ids:
+                ids.remove(0)
+            num_objs = self.max_num_obj if len(ids)>self.max_num_obj else len(ids)
             
             each_gt = None
             for each_sep_obj in ids[:self.max_num_obj]:
@@ -285,19 +297,24 @@ class VideoDataset(data.Dataset):
                 if each_gt is None:
                     each_gt = this
                 each_gt += this
-                
+            
+            
             cropped_img.append(pil_to_tensor(this_im))
             this_im = torch.as_tensor(self.resize_longest.apply_image(np.array(this_im, dtype=np.uint8))).permute(2, 0, 1)
             resize_longest_size = this_im.shape[-2:]
             this_im = self.preprocess(this_im)
             images.append(this_im)
+            
+            if each_gt is None:
+                return self.__getitem__(np.random.randint(self.__len__()))
             masks.append(each_gt)
 
         images = torch.stack(images, 0)
         masks = np.stack(masks, 0)
 
         target_objects = np.unique(masks[0]).tolist()
-        target_objects.remove(0)
+        if 0 in target_objects:
+            target_objects.remove(0)
         
         info['num_objects'] = max(1, len(target_objects))
 
