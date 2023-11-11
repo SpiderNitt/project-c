@@ -223,12 +223,13 @@ class CamoSam(L.LightningModule):
         loss_iou = 0
         loss_total = 0
 
-        for each_output, gt_mask, selector, low_pred in zip(output_0, batch['gt_mask'], batch['selector'], low_res_pred): # selector = [True, True, False]
+        for each_output, gt_mask, selector, low_pred, resize_longest_size in zip(output_0, batch['gt_mask_256'], batch['selector'], low_res_pred, batch['resize_longest_size']): # selector = [True, True, False]
             total_num_objects += selector.sum()
-            pred_masks = each_output["masks"] # [P=3, C, H, W]
+            pred_masks = each_output["low_res_logits"][..., :resize_longest_size[0]//4, :resize_longest_size[1]//4] # [P=3, C, H, W]
             # pred_masks_list.append(pred_masks.detach())
             gt_mask = gt_mask[0].unsqueeze(1) # [P, 1, H, W] # gt_mask[0] to get the 0th mask from the prediction
             gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W] 
+            gt_mask = gt_mask[..., :resize_longest_size[0]//4, :resize_longest_size[1]//4]
             
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
             loss_tmp = (
@@ -251,7 +252,7 @@ class CamoSam(L.LightningModule):
             )[batch_indexing, min_idx][selector].sum() # [num_true_obj]
             low_res_pred_list.append(low_pred[batch_indexing, min_idx]) # (P=3, C, 256, 256) -> (P=3, 256, 256)
 
-            pred_masks_list_0.append(pred_masks_sigmoid[batch_indexing, min_idx][selector].detach())
+            pred_masks_list_0.append(torch.sigmoid(each_output["masks"])[batch_indexing, min_idx][selector].detach())
             iou_pred_list_0.append(each_output["iou_predictions"][batch_indexing, min_idx][selector].detach())
         
         low_res_pred_list = torch.stack(low_res_pred_list).unsqueeze(1) # (B, 1, P=3, 256, 256)
@@ -261,12 +262,13 @@ class CamoSam(L.LightningModule):
             pred_masks_list_1 = []
             iou_pred_list_1 = []
 
-            for each_output, gt_mask, selector in zip(output_1, batch['gt_mask'], batch['selector']): # selector = [True, True, False]
+            for each_output, gt_mask, selector, resize_longest_size in zip(output_1, batch['gt_mask_256'], batch['selector'], batch['resize_longest_size']): # selector = [True, True, False]
                 total_num_objects += selector.sum()
-                pred_masks = each_output["masks"] # [P=3, C, H, W]
+                pred_masks = each_output["low_res_logits"][..., :resize_longest_size[0]//4, :resize_longest_size[1]//4] # [P=3, C, H, W]
                 # pred_masks_list.append(pred_masks.detach())
                 gt_mask = gt_mask[1].unsqueeze(1) # [P, 1, H, W] # gt_mask[1] to get the 1st mask from the prediction
-                gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W] 
+                gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W
+                gt_mask = gt_mask[..., :resize_longest_size[0]//4, :resize_longest_size[1]//4] 
 
                 pred_masks_sigmoid = torch.sigmoid(pred_masks)
                 loss_tmp = (
@@ -288,7 +290,7 @@ class CamoSam(L.LightningModule):
                     each_output["iou_predictions"], self.iou(pred_masks_sigmoid, gt_mask), reduction="none"
                 )[batch_indexing, min_idx][selector].sum() # [num_true_obj]
 
-                pred_masks_list_1.append(pred_masks_sigmoid[batch_indexing, min_idx][selector].detach())
+                pred_masks_list_1.append(torch.sigmoid(each_output["masks"])[batch_indexing, min_idx][selector].detach())
                 iou_pred_list_1.append(each_output["iou_predictions"][batch_indexing, min_idx][selector].detach())
             
         # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')
@@ -328,12 +330,13 @@ class CamoSam(L.LightningModule):
         loss_iou = 0
         loss_total = 0
 
-        for each_output, gt_mask, selector, low_pred in zip(output_0, batch['gt_mask'], batch['selector'], low_res_pred): # selector = [True, True, False]
+        for each_output, gt_mask, selector, low_pred, resize_longest_size in zip(output_0, batch['gt_mask_256'], batch['selector'], low_res_pred, batch['resize_longest_size']): # selector = [True, True, False]
             total_num_objects += selector.sum()
-            pred_masks = each_output["masks"] # [P=3, C, H, W]
+            pred_masks = each_output["low_res_logits"][..., :resize_longest_size[0]//4, :resize_longest_size[1]//4] # [P=3, C, H, W]
             # pred_masks_list.append(pred_masks.detach())
             gt_mask = gt_mask[0].unsqueeze(1) # [P, 1, H, W] # gt_mask[0] to get the 0th mask from the prediction
             gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W] 
+            gt_mask = gt_mask[..., :resize_longest_size[0]//4, :resize_longest_size[1]//4]
             
             pred_masks_sigmoid = torch.sigmoid(pred_masks)
             loss_tmp = (
@@ -356,7 +359,7 @@ class CamoSam(L.LightningModule):
             )[batch_indexing, min_idx][selector].sum() # [num_true_obj]
             low_res_pred_list.append(low_pred[batch_indexing, min_idx]) # (P=3, C, 256, 256) -> (P=3, 256, 256)
 
-            pred_masks_list_0.append(pred_masks_sigmoid[batch_indexing, min_idx][selector].detach())
+            pred_masks_list_0.append(torch.sigmoid(each_output["masks"])[batch_indexing, min_idx][selector].detach())
             iou_pred_list_0.append(each_output["iou_predictions"][batch_indexing, min_idx][selector].detach())
         
         low_res_pred_list = torch.stack(low_res_pred_list).unsqueeze(1) # (B, 1, P=3, 256, 256)
@@ -366,12 +369,13 @@ class CamoSam(L.LightningModule):
             pred_masks_list_1 = []
             iou_pred_list_1 = []
 
-            for each_output, gt_mask, selector in zip(output_1, batch['gt_mask'], batch['selector']): # selector = [True, True, False]
+            for each_output, gt_mask, selector, resize_longest_size in zip(output_1, batch['gt_mask_256'], batch['selector'], batch['resize_longest_size']): # selector = [True, True, False]
                 total_num_objects += selector.sum()
-                pred_masks = each_output["masks"] # [P=3, C, H, W]
+                pred_masks = each_output["low_res_logits"][..., :resize_longest_size[0]//4, :resize_longest_size[1]//4] # [P=3, C, H, W]
                 # pred_masks_list.append(pred_masks.detach())
                 gt_mask = gt_mask[1].unsqueeze(1) # [P, 1, H, W] # gt_mask[1] to get the 1st mask from the prediction
-                gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W] 
+                gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W]
+                gt_mask = gt_mask[..., :resize_longest_size[0]//4, :resize_longest_size[1]//4]
 
                 pred_masks_sigmoid = torch.sigmoid(pred_masks)
                 loss_tmp = (
@@ -393,7 +397,7 @@ class CamoSam(L.LightningModule):
                     each_output["iou_predictions"], self.iou(pred_masks_sigmoid, gt_mask), reduction="none"
                 )[batch_indexing, min_idx][selector].sum() # [num_true_obj]
 
-                pred_masks_list_1.append(pred_masks_sigmoid[batch_indexing, min_idx][selector].detach())
+                pred_masks_list_1.append(torch.sigmoid(each_output["masks"])[batch_indexing, min_idx][selector].detach())
                 iou_pred_list_1.append(each_output["iou_predictions"][batch_indexing, min_idx][selector].detach())
             
         # Ex: focal - tensor(0.5012, device='cuda:0') dice - tensor(1.9991, device='cuda:0') iou - tensor(1.7245e-05, device='cuda:0')

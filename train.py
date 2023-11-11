@@ -1,5 +1,6 @@
 import torch
 import lightning as L
+from lightning.pytorch import seed_everything
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import Callback, ModelSummary, LearningRateMonitor
 from segment_anything import sam_model_registry
@@ -13,6 +14,7 @@ from dataloaders.camo_dataset import get_loader
 from callbacks import WandB_Logger, InferCallback
 from config import cfg
 
+seed_everything(42)
 torch.set_float32_matmul_precision('high')
 
 path  = Path(f'DAVIS-evaluation/Results')
@@ -54,8 +56,8 @@ trainer = L.Trainer(
     num_sanity_val_steps=0,
     # strategy="ddp",
     log_every_n_steps=15,
-    # check_val_every_n_epoch=cfg.val_interval,
-    val_check_interval = 0.5,
+    check_val_every_n_epoch=cfg.val_interval,
+    # val_check_interval = 0.5,
     enable_checkpointing=False,
     profiler='simple',
     # overfit_batches=1

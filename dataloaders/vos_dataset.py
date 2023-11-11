@@ -218,14 +218,16 @@ class VOSDataset(Dataset):
                 all_frame_gt[t,i] = (this_mask[t])
 
         cls_gt = np.expand_dims(cls_gt, 1)
-        prev_frame_gt = all_frame_gt[:-1].reshape(-1, H, W)
+        all_frame_gt_256 = all_frame_gt.reshape(-1, H, W)
         
-        new_prev_frame_gt = []
-        for t in range(len(prev_frame_gt)):
-            new_prev_frame_gt.append(torch.as_tensor(self.resize_longest_mask.apply_image(prev_frame_gt[t].astype(dtype=np.uint8))))
+        new_all_frame_gt = []
+        for t in range(len(all_frame_gt_256)):
+            new_all_frame_gt.append(torch.as_tensor(self.resize_longest_mask.apply_image(all_frame_gt_256[t].astype(dtype=np.uint8))))
 
-        new_prev_frame_gt = torch.stack(new_prev_frame_gt, 0).reshape(-1, self.max_num_obj, *new_prev_frame_gt[0].shape[-2:])
-        new_prev_frame_gt = self.preprocess_prev_masks(new_prev_frame_gt).float()
+        new_all_frame_gt = torch.stack(new_all_frame_gt, 0).reshape(-1, self.max_num_obj, *new_all_frame_gt[0].shape[-2:])
+        new_all_frame_gt = self.preprocess_prev_masks(new_all_frame_gt).float()
+
+        new_prev_frame_gt = new_all_frame_gt[:-1]
 
         all_frame_gt = torch.as_tensor(all_frame_gt).float()
 
@@ -238,6 +240,7 @@ class VOSDataset(Dataset):
             data = {
                 'image': images, # (num_frames=3, 3, 1024, 1024) 
                 'gt_mask': all_frame_gt[-2:], # (num_frames=2, num_obj=3, H, W)
+                'gt_mask_256': new_all_frame_gt[-2:], # (num_frames=2, num_obj=3, 256, 256)
                 'prev_masks': new_prev_frame_gt[:1], # (num_frames=1, num_obj=3, 256, 256)
                 'selector': selector, # (num_obj=3) Indicates if ith object exists
                 'cropped_img': cropped_img[-2:], # (num_frames=2, 3, H, W)
@@ -249,6 +252,7 @@ class VOSDataset(Dataset):
             data = {
                 'image': images, # (num_frames=3, 3, 1024, 1024) 
                 'gt_mask': all_frame_gt[-1:], # (num_frames=1, num_obj=3, H, W)
+                'gt_mask_256': new_all_frame_gt[-1:], # (num_frames=1, num_obj=3, 256, 256)
                 'prev_masks': new_prev_frame_gt, # (num_frames=2, num_obj=3, 256, 256)
                 'selector': selector, # (num_obj=3) Indicates if ith object exists
                 'cropped_img': cropped_img[-1:], # (num_frames=1, 3, H, W)
