@@ -84,12 +84,6 @@ class VOSDataset(Dataset):
             # transforms.RandomResizedCrop((1080, 1920), scale=(0.7,1.00), ratio=(1920/1080,1920/1080), interpolation=InterpolationMode.NEAREST)
         ])
 
-        # Final transform without randomness
-        self.final_im_transform = transforms.Compose([
-            transforms.ToTensor(),
-            im_normalization,
-        ])
-
         self.resize_longest = ResizeLongestSide(1024)
         self.resize_longest_mask = ResizeLongestSide(256)
     

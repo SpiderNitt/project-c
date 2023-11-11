@@ -16,10 +16,10 @@ from pathlib import Path
 from segment_anything.utils.transforms import ResizeLongestSide
 from torchvision.transforms.functional import resize
 from torchvision.transforms import InterpolationMode
-from .tps import random_tps_warp
-from .reseed import reseed
+from dataloaders.tps import random_tps_warp
+from dataloaders.reseed import reseed
 from torchvision.transforms.functional import resize, pil_to_tensor
-from .range_transform import im_normalization, im_mean
+from dataloaders.range_transform import im_normalization, im_mean
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import time
@@ -178,13 +178,13 @@ class VideoDataset(data.Dataset):
 
 
         self.pair_im_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=20, shear=20, translate=(0.2,0.4), scale=(0.85, 1.15), interpolation=InterpolationMode.BICUBIC, fill=im_mean),
+            transforms.RandomAffine(degrees=None if val else 20, shear=None if val else 20, translate=None if val else (0.2,0.4), scale=None if val else (0.85, 1.15), interpolation=InterpolationMode.BICUBIC, fill=im_mean),
             # transforms.Resize(384, InterpolationMode.BICUBIC),
             # transforms.RandomCrop((384, 384), pad_if_needed=True, fill=im_mean),
         ])
 
         self.pair_gt_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=20, shear=20, translate=(0.2,0.4), scale=(0.85, 1.15), interpolation=InterpolationMode.BICUBIC, fill=0),
+            transforms.RandomAffine(degrees=None if val else 20, shear=None if val else 20, translate=None if val else (0.2,0.4), scale=None if val else (0.85, 1.15), interpolation=InterpolationMode.BICUBIC, fill=0),
             # transforms.Resize(384, InterpolationMode.NEAREST),
             # transforms.RandomCrop((384, 384), pad_if_needed=True, fill=0),
         ])
@@ -194,7 +194,6 @@ class VideoDataset(data.Dataset):
         self.all_im_lone_transform = transforms.Compose([
             transforms.ColorJitter((0.8,1.2), (0.8,1.2), (0.8,1.2), 0.15),
             transforms.RandomGrayscale(0.5),
-            transforms.RandomHorizontalFlip(0.5)
         ])
 
         self.all_im_dual_transform = transforms.Compose([
@@ -205,16 +204,6 @@ class VideoDataset(data.Dataset):
         self.all_gt_dual_transform = transforms.Compose([
             transforms.RandomAffine(degrees=0, scale=(0.8, 1.5), fill=0),
             transforms.RandomHorizontalFlip(0.5),
-        ])
-
-        # Final transform without randomness
-        self.final_im_transform = transforms.Compose([
-            transforms.ToTensor(),
-            # im_normalization,
-        ])
-
-        self.final_gt_transform = transforms.Compose([
-            transforms.ToTensor(),
         ])
 
         self.resize_longest = ResizeLongestSide(1024)
@@ -270,7 +259,6 @@ class VideoDataset(data.Dataset):
         reseed(sequence_seed)
         this_gt_ = self.all_gt_dual_transform(gt)
         
-        num_objs = 0
         for _ in range(self.num_frames):
             
             pairwise_seed = np.random.randint(2147483647)
@@ -279,13 +267,12 @@ class VideoDataset(data.Dataset):
             # this_im = self.pair_im_lone_transform(this_im)
             
             this_gt = np.asarray(this_gt_)
-            ids = sorted(list(np.unique(this_gt)))
+            ids = np.unique(this_gt)
             if 0 in ids:
                 ids.remove(0)
-            num_objs = self.max_num_obj if len(ids)>self.max_num_obj else len(ids)
             
             each_gt = None
-            for each_sep_obj in ids[:self.max_num_obj]:
+            for each_sep_obj in ids:
                 # print(each_sep_obj)
                 this = Image.fromarray((this_gt==each_sep_obj).astype(np.uint8))
                 reseed(pairwise_seed)
@@ -315,6 +302,8 @@ class VideoDataset(data.Dataset):
         target_objects = np.unique(masks[0]).tolist()
         if 0 in target_objects:
             target_objects.remove(0)
+        if len(target_objects) > self.max_num_obj:
+            target_objects = np.random.choice(target_objects, size=self.max_num_obj, replace=False)
         
         info['num_objects'] = max(1, len(target_objects))
 
@@ -329,23 +318,28 @@ class VideoDataset(data.Dataset):
                 all_frame_gt[t,i] = (this_mask[t])
 
         cls_gt = np.expand_dims(cls_gt, 1)
-        prev_frame_gt = all_frame_gt[:-1].reshape(-1, H, W)
+        all_frame_gt_256 = all_frame_gt.reshape(-1, H, W)
         
-        new_prev_frame_gt = []
-        for t in range(len(prev_frame_gt)):
-            new_prev_frame_gt.append(torch.as_tensor(self.resize_longest_mask.apply_image(prev_frame_gt[t].astype(dtype=np.uint8))))
+        new_all_frame_gt = []
+        for t in range(len(all_frame_gt_256)):
+            new_all_frame_gt.append(torch.as_tensor(self.resize_longest_mask.apply_image(all_frame_gt_256[t].astype(dtype=np.uint8))))
 
-        new_prev_frame_gt = torch.stack(new_prev_frame_gt, 0).reshape(-1, self.max_num_obj, *new_prev_frame_gt[0].shape[-2:])
-        new_prev_frame_gt = self.preprocess_prev_masks(new_prev_frame_gt).float()
+        new_all_frame_gt = torch.stack(new_all_frame_gt, 0).reshape(-1, self.max_num_obj, *new_all_frame_gt[0].shape[-2:])
+        new_all_frame_gt = self.preprocess_prev_masks(new_all_frame_gt).float()
+
+        new_prev_frame_gt = new_all_frame_gt[:-1]
 
         all_frame_gt = torch.as_tensor(all_frame_gt).float()
-        
-        selector = torch.BoolTensor([1 for _ in range(num_objs)]+[0]*(self.max_num_obj-num_objs))
+
+        # 1 if object exist, 0 otherwise
+        selector = [1 if i < info['num_objects'] else 0 for i in range(self.max_num_obj)]
+        selector = torch.BoolTensor(selector)
 
         if self.cfg.stage1:
             data = {
                 'image': images, # (num_frames=3, 3, 1024, 1024) 
                 'gt_mask': all_frame_gt[-2:], # (num_frames=2, num_obj=3, H, W)
+                'gt_mask_256': new_all_frame_gt[-2:], # (num_frames=2, num_obj=3, 256, 256)
                 'prev_masks': new_prev_frame_gt[:1], # (num_frames=1, num_obj=3, 256, 256)
                 'selector': selector, # (num_obj=3) Indicates if ith object exists
                 'cropped_img': cropped_img[-2:], # (num_frames=2, 3, H, W)
@@ -357,6 +351,7 @@ class VideoDataset(data.Dataset):
             data = {
                 'image': images, # (num_frames=3, 3, 1024, 1024) 
                 'gt_mask': all_frame_gt[-1:], # (num_frames=1, num_obj=3, H, W)
+                'gt_mask_256': new_all_frame_gt[-1:], # (num_frames=1, num_obj=3, 256, 256)
                 'prev_masks': new_prev_frame_gt, # (num_frames=2, num_obj=3, 256, 256)
                 'selector': selector, # (num_obj=3) Indicates if ith object exists
                 'cropped_img': cropped_img[-1:], # (num_frames=1, 3, H, W)
@@ -366,6 +361,7 @@ class VideoDataset(data.Dataset):
             }
 
         return data
+
  
 
     def rgb_loader(self, path):
