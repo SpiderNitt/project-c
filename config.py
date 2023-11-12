@@ -1,14 +1,14 @@
 from omegaconf import OmegaConf
 
 cfg = {
-    "description": "Fix layer norm and added parameters before attention.",
+    "description": "",
     "precision": "32",
     "num_devices": 1,
     "num_epochs": 150,
     "save_log_weights_interval": 25,
     "train_metric_interval": 25,
     'val_interval': 25,
-    "inference_epochs": [75, 150],
+    "inference_epochs": [],
     "model_checkpoint_at": "checkpoints",
     "img_size": 1024,
     "out_dir": "/",
@@ -43,7 +43,7 @@ cfg = {
         "num_frames": 3,
         "max_jump": 5,
         "num_workers": 4,
-        "pin_memory": False,
+        "pin_memory": True,
         "persistent_workers": True,
     },
 }
