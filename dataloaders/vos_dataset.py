@@ -29,8 +29,6 @@ class VOSDataset(Dataset):
         self.im_root = im_root
         self.gt_root = gt_root
         self.max_jump = max_jump
-        self.num_frames = num_frames
-        self.max_num_obj = max_num_obj
         self.val = val
         self.videos = []
         self.frames = {}
@@ -124,11 +122,14 @@ class VOSDataset(Dataset):
         while trials < 5:
             info['frames'] = [] # Appended with actual frames
 
-            num_frames = self.num_frames
+            num_frames = self.cfg.num_frames
             length = len(frames)
             this_max_jump = min(len(frames), self.max_jump)
 
             # iterative sampling
+            if self.val:
+                frames_idx = [3]
+                reseed(2023)
             frames_idx = [np.random.randint(length)]
             acceptable_set = set(range(max(0, frames_idx[-1]-this_max_jump), min(length, frames_idx[-1]+this_max_jump+1))).difference(set(frames_idx))
             while(len(frames_idx) < num_frames):
@@ -138,7 +139,7 @@ class VOSDataset(Dataset):
                 acceptable_set = acceptable_set.union(new_set).difference(set(frames_idx))
 
             frames_idx = sorted(frames_idx)
-            if np.random.rand() < 0.5:
+            if np.random.rand() < 0.5 and not self.val:
                 # Reverse time
                 frames_idx = frames_idx[::-1]
 
@@ -194,8 +195,8 @@ class VOSDataset(Dataset):
         if trials == 5:
             return self.__getitem__(np.random.randint(len(self.videos)))
         
-        if len(target_objects) > self.max_num_obj:
-            target_objects = np.random.choice(target_objects, size=self.max_num_obj, replace=False)
+        if len(target_objects) > self.cfg.max_num_obj:
+            target_objects = np.random.choice(target_objects, size=self.cfg.max_num_obj, replace=False)
 
         info['num_objects'] = max(1, len(target_objects))
 
@@ -203,9 +204,9 @@ class VOSDataset(Dataset):
 
         H, W = tuple(masks.shape[1:])
         # Generate one-hot ground-truth
-        cls_gt = np.zeros((self.num_frames, H, W), dtype=np.int64)
-        all_frame_gt = np.zeros((self.num_frames, self.max_num_obj, H, W), dtype=np.int64) # Shape explains itself
-        for t in range(self.num_frames):
+        cls_gt = np.zeros((self.cfg.num_frames, H, W), dtype=np.int64)
+        all_frame_gt = np.zeros((self.cfg.num_frames, self.cfg.max_num_obj, H, W), dtype=np.int64) # Shape explains itself
+        for t in range(self.cfg.num_frames):
             for i, l in enumerate(target_objects):
                 this_mask = (masks==l)
                 cls_gt[this_mask] = i+1
@@ -218,7 +219,7 @@ class VOSDataset(Dataset):
         for t in range(len(all_frame_gt_256)):
             new_all_frame_gt.append(torch.as_tensor(self.resize_longest_mask.apply_image(all_frame_gt_256[t].astype(dtype=np.uint8))))
 
-        new_all_frame_gt = torch.stack(new_all_frame_gt, 0).reshape(-1, self.max_num_obj, *new_all_frame_gt[0].shape[-2:])
+        new_all_frame_gt = torch.stack(new_all_frame_gt, 0).reshape(-1, self.cfg.max_num_obj, *new_all_frame_gt[0].shape[-2:])
         new_all_frame_gt = self.preprocess_prev_masks(new_all_frame_gt).float()
 
         new_prev_frame_gt = new_all_frame_gt[:-1]
@@ -226,7 +227,7 @@ class VOSDataset(Dataset):
         all_frame_gt = torch.as_tensor(all_frame_gt).float()
 
         # 1 if object exist, 0 otherwise
-        selector = [1 if i < info['num_objects'] else 0 for i in range(self.max_num_obj)]
+        selector = [1 if i < info['num_objects'] else 0 for i in range(self.cfg.max_num_obj)]
         selector = torch.BoolTensor(selector)
 
         # (H', W') -> after LongestSideResize

@@ -79,7 +79,7 @@ class Sam(nn.Module):
         # embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
         embeddings = {"current_frame_embeddings": image_embeddings[:, t], "prev_frames_embeddings": image_embeddings[:, :t], "mask_embeddings": mask_embeddings}
         
-        all_sparse_embeddings, all_dense_embeddings, prop_pos_embed = self.propagation_module(
+        all_sparse_embeddings, all_dense_embeddings, log_dict = self.propagation_module(
             embeddings, pos_embed
         )  # (B, P=3, 64, 64, 256)
         all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (B, P=3, 256, 64, 64)
@@ -109,8 +109,10 @@ class Sam(nn.Module):
                     "low_res_logits": low_res_masks, # (P=3, C, 256, 256)
                 }
             )
+        log_dict["prop_dense_embed"] = all_dense_embeddings
+        # log_dict["prop_sparse_embed"] = all_sparse_embeddings
             
-        return outputs, prop_pos_embed, all_dense_embeddings
+        return outputs, log_dict
 
     def postprocess_masks(
         self,

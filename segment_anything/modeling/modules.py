@@ -17,11 +17,11 @@ class PropagationModule(nn.Module):
         self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
         
         self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=128, num_heads=1, dropout=0.1)
-        self.values_mlp = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
+        self.values_mlp = MLP(input_dim=256, hidden_dim=256, output_dim=256, dropout=0.1)
 
         self.affinity = MemoryEfficientAffinity(input_dim=512, embed_dim=128, dropout=0.1)
 
-        self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
+        self.dense_embedding_linear = MLP(input_dim=512, hidden_dim=256, output_dim=256, dropout=0.1)
 
         self.layer_norm_input = nn.LayerNorm(256)
         self.layer_norm_values_1 = nn.LayerNorm(256)
@@ -73,16 +73,25 @@ class PropagationModule(nn.Module):
         dense_embeddings = self.dense_embedding_linear(dense_embeddings) # (B, num_objects=3, 64, 64, 256)
         sparse_embeddings = torch.empty((*dense_embeddings.shape[:2], 0, 256), device=dense_embeddings.device) # (B, num_objects=3, 1, 256)
 
-        return sparse_embeddings, dense_embeddings, [self.pos_embed_wt_attention, self.pos_embed_wt_affinity]
+        return (
+            sparse_embeddings,
+            dense_embeddings,
+            {
+                "pos_embed_wt_attention": self.pos_embed_wt_attention,
+                "pos_embed_wt_affinity": self.pos_embed_wt_affinity,
+                "final_dense_linear_wt": self.dense_embedding_linear.linear2.weight,
+                "cross_attn_values": values,
+            },
+        )
     
 class MLP(nn.Module):
-    def __init__(self, input_dim, hidden_dim, dropout=0.1):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
 
         self.linear1 = nn.Linear(input_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, input_dim)
+        self.linear2 = nn.Linear(hidden_dim, output_dim)
         self.dropout = nn.Dropout(dropout)
         self.gelu = nn.GELU()
     
@@ -202,9 +211,9 @@ class MemoryEfficientAffinity(nn.Module):
         # Stack all weight matrices 1...h together for efficiency
         # Note that in many implementations you see "bias=False" which is optional
         self.qk_proj = nn.Linear(input_dim, embed_dim)
-        self.qv_proj = nn.Linear(input_dim, embed_dim)
+        self.qv_proj = nn.Linear(input_dim, embed_dim * 2)
         self.mk_proj = nn.Linear(input_dim, embed_dim)
-        self.mv_proj = nn.Linear(input_dim, embed_dim)
+        self.mv_proj = nn.Linear(input_dim, embed_dim * 2)
     
     def forward(self, q, m):
         batch_size = q.size(0)
@@ -220,10 +229,10 @@ class MemoryEfficientAffinity(nn.Module):
         qk = qk.reshape(batch_size * num_objects, seq_len, self.embed_dim) # (B*P, 64*64, embed_dim=128)
 
         mk = mk.transpose(1, 2).reshape(batch_size * num_objects, seq_len*num_frames, self.embed_dim) # (B*P, F*64*64, embed_dim=128)
-        mv = mv.transpose(1, 2).reshape(batch_size * num_objects, seq_len*num_frames, self.embed_dim) # (B*P, F*64*64, embed_dim=128)
+        mv = mv.transpose(1, 2).reshape(batch_size * num_objects, seq_len*num_frames, self.embed_dim * 2) # (B*P, F*64*64, embed_dim=128)
 
         values = xops.memory_efficient_attention(qk, mk, mv, p=self.dropout) # (B*P, 64*64, embed_dim=128)
-        values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim) # (B, P, 64, 64, embed_dim=128)
+        values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim * 2) # (B, P, 64, 64, embed_dim=128)
 
         out = torch.cat([qv, values], dim=-1) # (B, P, 64, 64, embed_dim=256)
 

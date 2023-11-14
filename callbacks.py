@@ -9,6 +9,7 @@ from pathlib import Path
 
 class WandB_Logger(Callback):
     def __init__(self, cfg, wnb):
+        super().__init__()
         self.cfg = cfg
         self.wnb = wnb.experiment
         self.version = wnb.version
@@ -37,6 +38,7 @@ class WandB_Logger(Callback):
             }
             
             torch.save(model_dict, model_name)
+            torch.save(model_dict, f"{os.path.join(self.cfg.model_checkpoint_at, f'{self.cfg.dataset.num_frames * self.cfg.dataset.stage1}.pth')}")
 
             my_model = wandb.Artifact(f"model_{self.version}", type="model")
             my_model.add_file(model_name)
@@ -48,6 +50,7 @@ class WandB_Logger(Callback):
 
 class InferCallback(Callback):
     def __init__(self, cfg, wnb):
+        super().__init__()
         self.cfg = cfg
         self.wnb = wnb.experiment
         self.version = wnb.version
