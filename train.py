@@ -20,7 +20,7 @@ parser.add_argument('--bsize', type=int, default=4, help='Batch size')
 parser.add_argument('--num_frames', type=int, default=3, help='Number of frames')
 parser.add_argument('--ckpt', type=str, default=None, help='Path to checkpoint (default: None)')
 parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs (default: 2)')
-parser.add_argument('--lr', type=int, default=0, help='Learning Rate')
+parser.add_argument('--lr', type=float, default=0, help='Learning Rate')
 
 args = parser.parse_args()
 cfg.dataset.stage1 = bool(args.stage)
