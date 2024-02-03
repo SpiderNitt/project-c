@@ -13,19 +13,20 @@ class PropagationModule(nn.Module):
         self.num_frames = cfg.dataset.num_frames
         self.num_tokens = cfg.num_tokens
 
+        self.layer_norm_input = nn.LayerNorm(256)
         self.pos_embed_wt_attention = nn.Parameter(torch.zeros(256))
-        self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
-        
         self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=128, num_heads=1, dropout=0.1)
         self.values_mlp = MLP(input_dim=256, hidden_dim=256, output_dim=256, dropout=0.1)
+        self.layer_norm_values_1 = nn.LayerNorm(256)
 
+        self.TFMM = nn.ModuleList([self.layer_norm_input, self.pos_embed_wt_attention, self.attention, self.values_mlp, self.layer_norm_values_1])
+
+        self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
+        self.layer_norm_affinity = nn.LayerNorm(256)
         self.affinity = MemoryEfficientAffinity(input_dim=512, embed_dim=128, dropout=0.1)
-
         self.dense_embedding_linear = MLP(input_dim=512, hidden_dim=256, output_dim=256, dropout=0.1)
 
-        self.layer_norm_input = nn.LayerNorm(256)
-        self.layer_norm_values_1 = nn.LayerNorm(256)
-        self.layer_norm_affinity = nn.LayerNorm(256)
+        self.MPAM = nn.ModuleList([self.pos_embed_wt_affinity, self.layer_norm_affinity, self.affinity, self.dense_embedding_linear])
 
     def forward(self, embeddings: dict, pos_embed: torch.Tensor) -> torch.Tensor:
         """
@@ -68,9 +69,10 @@ class PropagationModule(nn.Module):
         prev_frames_embeddings_1 = prev_frames_embeddings_1.unsqueeze(2).repeat(1, 1, mask_embeddings.shape[2], 1, 1, 1) # (B, num_frames=2, num_objects=3, 64, 64, 256)
         key = torch.cat([prev_frames_embeddings_1, mask_embeddings], dim=-1) # (B, num_frames=2, num_objects=3, 64, 64, 512)
 
-        dense_embeddings = self.affinity(query, key) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
+        qv, affinity_values = self.affinity(query, key) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
+        affinity_values = torch.cat([qv, affinity_values], dim=-1) # (B, P, 64, 64, embed_dim=512)
         
-        dense_embeddings = self.dense_embedding_linear(dense_embeddings) # (B, num_objects=3, 64, 64, 256)
+        dense_embeddings = self.dense_embedding_linear(affinity_values) # (B, num_objects=3, 64, 64, 256)
         sparse_embeddings = torch.empty((*dense_embeddings.shape[:2], 0, 256), device=dense_embeddings.device) # (B, num_objects=3, 1, 256)
 
         return (
@@ -81,9 +83,33 @@ class PropagationModule(nn.Module):
                 "pos_embed_wt_affinity": self.pos_embed_wt_affinity,
                 "final_dense_linear_wt": self.dense_embedding_linear.linear2.weight,
                 "cross_attn_values": values,
+                "affinity_values": qv,
             },
         )
     
+class TFMM(nn.Module):
+    def __init__(self, cfg) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.max_num_obj = cfg.dataset.max_num_obj
+        self.num_frames = cfg.dataset.num_frames
+        self.num_tokens = cfg.num_tokens
+
+        self.pos_embed_wt_attention = nn.Parameter(torch.zeros(256))
+        self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
+        
+        self.attention = MemoryEfficientSelfAttention(input_dim=256, embed_dim=128, num_heads=1, dropout=0.1)
+        self.values_mlp = MLP(input_dim=256, hidden_dim=256, output_dim=256, dropout=0.1)
+
+        self.affinity = MemoryEfficientAffinity(input_dim=512, embed_dim=128, dropout=0.1)
+
+        self.dense_embedding_linear = MLP(input_dim=512, hidden_dim=256, output_dim=256, dropout=0.1)
+
+        self.layer_norm_input = nn.LayerNorm(256)
+        self.layer_norm_values_1 = nn.LayerNorm(256)
+        self.layer_norm_affinity = nn.LayerNorm(256)
+    
+
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
         super().__init__()
@@ -234,6 +260,4 @@ class MemoryEfficientAffinity(nn.Module):
         values = xops.memory_efficient_attention(qk, mk, mv, p=self.dropout) # (B*P, 64*64, embed_dim=128)
         values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim * 2) # (B, P, 64, 64, embed_dim=128)
 
-        out = torch.cat([qv, values], dim=-1) # (B, P, 64, 64, embed_dim=256)
-
-        return out # (B, P, 64, 64, embed_dim=256)
+        return qv, values # (B, P, 64, 64, embed_dim=256)

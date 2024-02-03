@@ -19,7 +19,7 @@ parser.add_argument('--stage', type=int, default=0, help='Stage')
 parser.add_argument('--bsize', type=int, default=4, help='Batch size')
 parser.add_argument('--num_frames', type=int, default=3, help='Number of frames')
 parser.add_argument('--ckpt', type=str, default=None, help='Path to checkpoint (default: None)')
-parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs (default: 2)')
+parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs (default: 10)')
 parser.add_argument('--lr', type=float, default=0, help='Learning Rate')
 
 args = parser.parse_args()
@@ -47,7 +47,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model = sam_model_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
 model = CamoSam(cfg, model, ckpt=ckpt)
 
-wandblogger = WandbLogger(project="Final_Model", save_code=True, settings=wandb.Settings(code_dir="."))
+wandblogger = WandbLogger(project="ECCV_SAM", save_code=True, settings=wandb.Settings(code_dir="."))
 
 # torch._dynamo.config.verbose=True # for debugging
 lr_monitor = LearningRateMonitor(logging_interval='epoch')
@@ -68,7 +68,7 @@ trainer = L.Trainer(
     log_every_n_steps=15,
     check_val_every_n_epoch=cfg.val_interval if cfg.dataset.stage1 else 1,
     val_check_interval = None if cfg.dataset.stage1 else cfg.val_interval,
-    enable_checkpointing=False,
+    enable_checkpointing=True,
     profiler='simple',
     # overfit_batches=1
 )
