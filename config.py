@@ -18,9 +18,9 @@ cfg = {
     "opt": {
         "learning_rate": 4e-4,
         "auto_lr": False,
-        "weight_decay": 1e-4,
+        "weight_decay": 0.01,
         "decay_factor": 1/2,
-        "steps": [4],
+        "steps": [5],
     },
     "model": {
         "type": "vit_l",
@@ -38,7 +38,7 @@ cfg = {
         "name": "moca",
         "root_dir": "raw/",
         "stage1": False,
-        "train_batch_size": 6,
+        "train_batch_size": 4,
         "val_batch_size": 2,
         "max_num_obj": 2,
         "num_frames": 3,

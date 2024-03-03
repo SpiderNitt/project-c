@@ -62,15 +62,14 @@ class CamoSam(L.LightningModule):
             param.requires_grad = model_grad.propagation_module
 
     def configure_optimizers(self) -> Any:
-        optimizer = torch.optim.AdamW([
-            {'params': self.model.propagation_module.TFMM.parameters(), 'weight_decay': self.cfg.opt.weight_decay*100},
-            {'params': self.model.propagation_module.MPAM.parameters(), 'weight_decay': self.cfg.opt.weight_decay}
-            ],
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
             lr= self.cfg.opt.learning_rate if self.cfg.opt.learning_rate else 0,
             betas=(0.9, 0.999),
             eps=1e-08,
-            weight_decay=0,
-            amsgrad=False)
+            weight_decay=self.cfg.opt.weight_decay,
+            amsgrad=False,
+        )
 
         if self.ckpt and not self.cfg.opt.learning_rate:
             try:

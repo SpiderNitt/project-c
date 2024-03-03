@@ -32,7 +32,7 @@ if cfg.dataset.stage1:
     cfg.opt.learning_rate = args.lr
 
 L.seed_everything(2023)
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('highest')
 
 path = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
@@ -47,7 +47,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model = sam_model_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
 model = CamoSam(cfg, model, ckpt=ckpt)
 
-wandblogger = WandbLogger(project="ECCV_SAM", save_code=True, settings=wandb.Settings(code_dir="."))
+wandblogger = WandbLogger(project="CVPR_SAM", save_code=True, settings=wandb.Settings(code_dir="."))
 
 # torch._dynamo.config.verbose=True # for debugging
 lr_monitor = LearningRateMonitor(logging_interval='epoch')
