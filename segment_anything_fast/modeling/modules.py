@@ -68,7 +68,8 @@ class PropagationModule(nn.Module):
         prev_frames_embeddings_1 = prev_frames_embeddings_1.unsqueeze(2).repeat(1, 1, mask_embeddings.shape[2], 1, 1, 1) # (B, num_frames=2, num_objects=3, 64, 64, 256)
         key = prev_frames_embeddings_1 + mask_embeddings # (B, num_frames=2, num_objects=3, 64, 64, 512)
 
-        dense_embeddings = self.affinity(query, key) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
+        affinity_values = self.affinity(query, key, mask_embeddings) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
+        dense_embeddings = affinity_values + values
         
         dense_embeddings = self.dense_embedding_linear(dense_embeddings) # (B, num_objects=3, 64, 64, 256)
         sparse_embeddings = torch.empty((*dense_embeddings.shape[:2], 0, 256), device=dense_embeddings.device) # (B, num_objects=3, 1, 256)
@@ -81,6 +82,7 @@ class PropagationModule(nn.Module):
                 "pos_embed_wt_affinity": self.pos_embed_wt_affinity,
                 "final_dense_linear_wt": self.dense_embedding_linear.linear2.weight,
                 "cross_attn_values": values,
+                "affinity_values": affinity_values
             },
         )
     
@@ -211,20 +213,21 @@ class MemoryEfficientAffinity(nn.Module):
         # Stack all weight matrices 1...h together for efficiency
         # Note that in many implementations you see "bias=False" which is optional
         self.qk_proj = nn.Linear(input_dim, embed_dim)
-        self.qv_proj = nn.Linear(input_dim, embed_dim)
         self.mk_proj = nn.Linear(input_dim, embed_dim)
         self.mv_proj = nn.Linear(input_dim, embed_dim)
+        self.o_proj = nn.Linear(embed_dim, embed_dim)
+
+        self.norm = nn.LayerNorm(embed_dim)
     
-    def forward(self, q, m):
+    def forward(self, q, m, v):
         batch_size = q.size(0)
         num_objects = q.size(1)
         num_frames = m.size(1)
         seq_len = 64*64
         
         qk = self.qk_proj(q) # (B, P, 64, 64, embed_dim=128)
-        qv = self.qv_proj(q) # (B, P, 64, 64, embed_dim=128)
         mk = self.mk_proj(m) # (B, F, P, 64, 64, embed_dim=128)
-        mv = self.mv_proj(m) # (B, F, P, 64, 64 embed_dim=128)
+        mv = self.mv_proj(v) # (B, F, P, 64, 64 embed_dim=128)
 
         qk = qk.reshape(batch_size * num_objects, seq_len, 1, self.embed_dim) # (B*P, 64*64, embed_dim=128)
 
@@ -234,6 +237,6 @@ class MemoryEfficientAffinity(nn.Module):
         values = flash_attn_func(qk, mk, mv, dropout_p=self.dropout) # (B*P, 64*64, embed_dim=128)
         values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim) # (B, P, 64, 64, embed_dim=128)
 
-        out = qv + values # (B, P, 64, 64, embed_dim=256)
+        values = self.norm(values + self.o_proj(values))
 
-        return out # (B, P, 64, 64, embed_dim=256)
+        return values # (B, P, 64, 64, embed_dim=256)

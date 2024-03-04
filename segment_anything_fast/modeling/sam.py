@@ -146,3 +146,6 @@ class Sam(nn.Module):
             masks, original_size, mode="bilinear", align_corners=False
         )
         return masks
+    
+    def train(self, mode: bool = False):
+        return super().train(False)
