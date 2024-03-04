@@ -15,6 +15,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import lightning as L
 
+class InferenceOnlyModel(torch.nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.model.eval()  # Set the wrapped model to eval mode
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
+    def train(self, mode: bool = True):
+        # Override the train method to prevent changing to train mode
+        super().train(False)  # Keep the wrapper and the wrapped model in eval mode
+        return self
+
 class CamoSam(L.LightningModule):
     mask_threshold: float = 0.0
     image_format: str = "RGB"
@@ -30,7 +44,7 @@ class CamoSam(L.LightningModule):
         """
         super().__init__()
         self.ckpt = ckpt
-        self.model = model
+        self.model = InferenceOnlyModel(model)
         self.cfg = config
         if ckpt is not None:
             self.model.propagation_module.load_state_dict(ckpt['model_state_dict'])
