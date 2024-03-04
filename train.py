@@ -2,8 +2,8 @@ import torch
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import Callback, ModelSummary, LearningRateMonitor
-from segment_anything import sam_model_registry
-from segment_anything.modeling import CamoSam
+from segment_anything_fast import sam_model_fast_registry
+from segment_anything_fast.modeling.camosam import CamoSam
 
 import argparse
 import wandb
@@ -23,16 +23,17 @@ parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs
 parser.add_argument('--lr', type=float, default=0, help='Learning Rate')
 
 args = parser.parse_args()
-cfg.dataset.stage1 = bool(args.stage)
-if cfg.dataset.stage1:
-    cfg.dataset.num_frames = args.num_frames
-    cfg.dataset.train_batch_size = args.bsize
-    cfg.model.propagation_ckpt = args.ckpt
-    cfg.num_epochs = args.num_epochs
-    cfg.opt.learning_rate = args.lr
+print(cfg)
+# cfg.dataset.stage1 = bool(args.stage)
+# if cfg.dataset.stage1:
+#     cfg.dataset.num_frames = args.num_frames
+#     cfg.dataset.train_batch_size = args.bsize
+#     cfg.model.propagation_ckpt = args.ckpt
+#     cfg.num_epochs = args.num_epochs
+#     cfg.opt.learning_rate = args.lr
 
 L.seed_everything(2023)
-torch.set_float32_matmul_precision('highest')
+# torch.set_float32_matmul_precision('highest')
 
 path = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
@@ -44,7 +45,7 @@ if cfg.model.propagation_ckpt:
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model = sam_model_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
+model = sam_model_fast_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
 model = CamoSam(cfg, model, ckpt=ckpt)
 
 wandblogger = WandbLogger(project="CVPR_SAM", save_code=True, settings=wandb.Settings(code_dir="."))
@@ -60,7 +61,7 @@ trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
     callbacks=callbacks,
-    precision=cfg.precision,
+    precision="bf16",
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
     num_sanity_val_steps=0,

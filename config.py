@@ -40,7 +40,7 @@ cfg = {
         "stage1": False,
         "train_batch_size": 4,
         "val_batch_size": 2,
-        "max_num_obj": 2,
+        "max_num_obj": 1,
         "num_frames": 3,
         "max_jump": 1,
         "num_workers": 4,
