@@ -33,7 +33,7 @@ print(cfg)
 #     cfg.opt.learning_rate = args.lr
 
 L.seed_everything(2023)
-# torch.set_float32_matmul_precision('highest')
+torch.set_float32_matmul_precision('highest')
 
 path = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
@@ -61,7 +61,7 @@ trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
     callbacks=callbacks,
-    precision="bf16",
+    precision="bf16-mixed",
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
     num_sanity_val_steps=0,

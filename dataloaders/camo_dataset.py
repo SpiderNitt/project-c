@@ -58,20 +58,20 @@ class VideoDataset(data.Dataset):
         # ])
 
         self.pair_im_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=(0, 15) if train else 0, shear=(0, 10) if train else 0, translate=(0.2, 0.2) if train else None, scale=(0.5, 0.7) if train else None, interpolation=InterpolationMode.BILINEAR, fill=im_mean),
+            transforms.RandomAffine(degrees=(0, 15) if train else 0, shear=(0, 10) if train else 0, translate=(0.2, 0.2) if train else None, scale=(0.2, 0.5) if train else None, interpolation=InterpolationMode.BILINEAR, fill=im_mean),
             transforms.GaussianBlur(kernel_size=3)
         ])
         self.first_pair_im_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=(0, 5) if train else 0, shear=(0, 5) if train else 0, translate=(0.1, 0.1) if train else None, scale=(0.5, 0.7) if train else None, interpolation=InterpolationMode.BILINEAR, fill=im_mean),
+            transforms.RandomAffine(degrees=(0, 5) if train else 0, shear=(0, 5) if train else 0, translate=(0.1, 0.1) if train else None, scale=(0.2, 0.5) if train else None, interpolation=InterpolationMode.BILINEAR, fill=im_mean),
             transforms.GaussianBlur(kernel_size=3)
         ])
 
         self.pair_gt_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=(0, 15) if train else 0, shear=(0, 10) if train else 0, translate=(0.2, 0.2) if train else None, scale=(0.5, 0.7) if train else None, interpolation=InterpolationMode.NEAREST, fill=0),
+            transforms.RandomAffine(degrees=(0, 15) if train else 0, shear=(0, 10) if train else 0, translate=(0.2, 0.2) if train else None, scale=(0.2, 0.5) if train else None, interpolation=InterpolationMode.NEAREST, fill=0),
             transforms.GaussianBlur(kernel_size=3)
         ])
         self.first_pair_gt_dual_transform = transforms.Compose([
-            transforms.RandomAffine(degrees=(0, 5) if train else 0, shear=(0, 5) if train else 0, translate=(0.1, 0.1) if train else None, scale=(0.5, 0.7) if train else None, interpolation=InterpolationMode.NEAREST, fill=0),
+            transforms.RandomAffine(degrees=(0, 5) if train else 0, shear=(0, 5) if train else 0, translate=(0.1, 0.1) if train else None, scale=(0.2, 0.5) if train else None, interpolation=InterpolationMode.NEAREST, fill=0),
             transforms.GaussianBlur(kernel_size=3)
         ])
 
