@@ -237,3 +237,35 @@ class MemoryEfficientAffinity(nn.Module):
         out = torch.cat([qv, values], dim=-1) # (B, P, 64, 64, embed_dim=256)
 
         return out # (B, P, 64, 64, embed_dim=256)
+
+class Memory():
+    def __init__ (self,length) -> None:
+        self.embed = []
+        self.mask = []
+        self.score = []
+        self.total_size = length
+        self.frames_n = []
+
+    def add(self, image_embed, mask, iou):
+        if len(self.embed) < self.total_size:
+            self.embed.append(image_embed)
+            self.mask.append(mask)
+            self.score.append(iou)
+                
+        else:
+            idx = 0
+            self.score.pop(idx)
+            self.embed.pop(idx)
+            self.mask.pop(idx)
+
+            self.embed.append(image_embed)
+            self.mask.append(mask)
+            self.score.append(iou)
+        
+    def get_embed(self):
+        # image_embed: (F, 256, 64, 64)
+        return torch.stack(self.embed, dim=0)
+    
+    def get_prev_mask(self):
+        # (F, P, 256, 256)
+        return torch.stack(self.mask, dim=0)
