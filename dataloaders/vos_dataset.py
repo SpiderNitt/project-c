@@ -139,6 +139,8 @@ class VOSDataset(Dataset):
                 acceptable_set = acceptable_set.union(new_set).difference(set(frames_idx))
 
             frames_idx = sorted(frames_idx)
+            if self.val:
+                frames_idx = [3, 4, 5]
             if np.random.rand() < 0.5 and not self.val:
                 # Reverse time
                 frames_idx = frames_idx[::-1]

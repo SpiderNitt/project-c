@@ -32,7 +32,7 @@ print(cfg)
 #     cfg.num_epochs = args.num_epochs
 #     cfg.opt.learning_rate = args.lr
 
-L.seed_everything(2023)
+L.seed_everything(2023, workers=True)
 torch.set_float32_matmul_precision('highest')
 
 path = Path(f'DAVIS-evaluation/Results')
@@ -71,6 +71,7 @@ trainer = L.Trainer(
     val_check_interval = None if cfg.dataset.stage1 else cfg.val_interval,
     enable_checkpointing=True,
     profiler='simple',
+    deterministic=True,
     # overfit_batches=1
 )
 if trainer.global_rank == 0:
