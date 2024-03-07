@@ -448,11 +448,11 @@ class CamoSam(L.LightningModule):
 
     def test_step(self, batch, batch_idx):
         memory = Memory(length = 2)
-        current_dir = 'results/' + batch['info'] + '/final_moca_eval' 
+        current_dir = self.cfg.output_dir + '/' + batch['info']
         os.makedirs(current_dir,exist_ok=True)
 
         first_gt = batch['first_gt']
-        first_embed = self.model.getImageEmbeddings(batch['image'].unsqueeze(0)).squeeze() # (B, F=3, 256, 64, 64)
+        first_embed = self.model.getImageEmbeddings(batch['image'][0].unsqueeze(0)).squeeze() # (B, F=3, 256, 64, 64)
         memory.add(first_embed, first_gt, 1)
 
         gt = np.array(Image.open(batch['first_gt_path']).convert("P"))

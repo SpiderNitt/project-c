@@ -12,22 +12,10 @@ from torch import nn
 from torch.nn import functional as F
 
 from typing import Any, Dict, List, Optional, Tuple
+from PIL import Image
+from .modules import Memory
 
 import lightning as L
-
-class InferenceOnlyModel(torch.nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-        self.model.eval()  # Set the wrapped model to eval mode
-
-    def forward(self, *args, **kwargs):
-        return self.model(*args, **kwargs)
-
-    def train(self, mode: bool = True):
-        # Override the train method to prevent changing to train mode
-        super().train(False)  # Keep the wrapper and the wrapped model in eval mode
-        return self
 
 class CamoSam(L.LightningModule):
     mask_threshold: float = 0.0
@@ -44,7 +32,7 @@ class CamoSam(L.LightningModule):
         """
         super().__init__()
         self.ckpt = ckpt
-        self.model = InferenceOnlyModel(model)
+        self.model = model
         self.cfg = config
         if ckpt is not None:
             self.model.propagation_module.load_state_dict(ckpt['model_state_dict'])
@@ -457,3 +445,36 @@ class CamoSam(L.LightningModule):
         self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
         
         self.log_images(batch['info'], img_dict, sep_mask_dict, mask_dict, gt_mask_dict, output['iou'], batch_idx=batch_idx, train=False)
+
+    def test_step(self, batch, batch_idx):
+        memory = Memory(length = 2)
+        current_dir = self.cfg.output_dir + '/' + batch['info']
+        os.makedirs(current_dir,exist_ok=True)
+
+        first_gt = batch['first_gt']
+        first_embed = self.model.getImageEmbeddings(batch['image'][0].unsqueeze(0)).squeeze() # (B, F=3, 256, 64, 64)
+        memory.add(first_embed, first_gt, 1)
+
+        gt = np.array(Image.open(batch['first_gt_path']).convert("P"))
+        masks = Image.fromarray(gt.astype(np.uint8)).convert("P")
+        masks.save(current_dir + '/' + f'{batch["frame_num"][0]}.png')
+
+        for img, i in zip(batch['image'][1:], batch['frame_num'][1:]):
+            current_frame_embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze(1) # (B, F=3, 256, 64, 64)
+            prev_masks = memory.get_prev_mask()
+            prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
+
+            prev_frames_embeddings = memory.get_embed().unsqueeze(0)
+
+            masks, low_res_masks, max_iou = self.model.getTestPropEmbeddings(batch, current_frame_embeddings, prev_frames_embeddings, prev_masks, multimask_output=self.cfg.model.multimask_output)
+            masks = masks.detach().cpu()
+            max_, max_pos = torch.max(masks, dim=0)
+            masks = ((max_pos+1) * (max_ > 0)).type(torch.int8)
+
+            masks = masks.cpu().numpy().astype(np.uint8)
+            
+            masks = Image.fromarray(masks*255).convert("P")
+            masks.putpalette(batch['palette'])
+            masks.save(current_dir + '/' f'{i}.png')
+
+            memory.add(current_frame_embeddings.squeeze(), (low_res_masks>0).squeeze(1).float(), max_iou.mean().item())

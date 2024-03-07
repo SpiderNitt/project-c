@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-from flash_attn import flash_attn_func
+import xformers.ops as xops
 
 class PropagationModule(nn.Module):
     def __init__(self, cfg) -> None:
@@ -17,11 +17,11 @@ class PropagationModule(nn.Module):
         self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
         
         self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=128, num_heads=1, dropout=0.1)
-        self.values_mlp = MLP(input_dim=256, hidden_dim=512, output_dim=256, dropout=0.25)
+        self.values_mlp = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
 
         self.affinity = MemoryEfficientAffinity(input_dim=512, embed_dim=128, dropout=0.1)
 
-        self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=512, output_dim=256, dropout=0.25)
+        self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
 
         self.layer_norm_input = nn.LayerNorm(256)
         self.layer_norm_values_1 = nn.LayerNorm(256)
@@ -85,13 +85,13 @@ class PropagationModule(nn.Module):
         )
     
 class MLP(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
+    def __init__(self, input_dim, hidden_dim, dropout=0.1):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
 
         self.linear1 = nn.Linear(input_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, output_dim)
+        self.linear2 = nn.Linear(hidden_dim, input_dim)
         self.dropout = nn.Dropout(dropout)
         self.gelu = nn.GELU()
     
@@ -150,7 +150,7 @@ class MemoryEfficientAttention(nn.Module):
         k = k.reshape(batch_size, seq_len*num_frames, self.num_heads, self.key_head_dim)
         v = v.permute(0, 1, 3, 4, 5, 2).reshape(batch_size, seq_len*num_frames, self.num_heads, self.value_head_dim*num_objects)
 
-        values = flash_attn_func(q, k, v, dropout_p=self.dropout) # (B, 64*64, num_heads, self.head_dim*num_obj=3)
+        values = xops.memory_efficient_attention(q, k, v, p=self.dropout) # (B, 64*64, num_heads, self.head_dim*num_obj=3)
         values = values.reshape(batch_size, 64, 64, self.num_heads * self.value_head_dim, num_objects)
         values = values.permute(0, 4, 1, 2, 3) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
 
@@ -194,7 +194,7 @@ class MemoryEfficientSelfAttention(nn.Module):
         qkv = qkv.permute(0, 2, 1, 3) # [Batch, Head, SeqLen, Dims]
         q, k, v = qkv.chunk(3, dim=-1)
 
-        values = flash_attn_func(q, k, v, dropout_p=self.dropout) # (B*num_obj, 64*64, num_heads, self.head_dim*3)
+        values = xops.memory_efficient_attention(q, k, v, p=self.dropout) # (B*num_obj, 64*64, num_heads, self.head_dim*3)
         values = values.permute(0, 2, 1, 3) # [B*num_obj, SeqLen, Head, Dims]
         values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim)
 
@@ -231,9 +231,41 @@ class MemoryEfficientAffinity(nn.Module):
         mk = mk.transpose(1, 2).reshape(batch_size * num_objects, seq_len*num_frames, self.embed_dim) # (B*P, F*64*64, embed_dim=128)
         mv = mv.transpose(1, 2).reshape(batch_size * num_objects, seq_len*num_frames, self.embed_dim) # (B*P, F*64*64, embed_dim=128)
 
-        values = flash_attn_func(qk, mk, mv, dropout_p=self.dropout) # (B*P, 64*64, embed_dim=128)
+        values = xops.memory_efficient_attention(qk, mk, mv, p=self.dropout) # (B*P, 64*64, embed_dim=128)
         values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim) # (B, P, 64, 64, embed_dim=128)
 
         out = torch.cat([qv, values], dim=-1) # (B, P, 64, 64, embed_dim=256)
 
         return out # (B, P, 64, 64, embed_dim=256)
+
+class Memory():
+    def __init__ (self,length) -> None:
+        self.embed = []
+        self.mask = []
+        self.score = []
+        self.total_size = length
+        self.frames_n = []
+
+    def add(self, image_embed, mask, iou):
+        if len(self.embed) < self.total_size:
+            self.embed.append(image_embed)
+            self.mask.append(mask)
+            self.score.append(iou)
+                
+        else:
+            idx = 0
+            self.score.pop(idx)
+            self.embed.pop(idx)
+            self.mask.pop(idx)
+
+            self.embed.append(image_embed)
+            self.mask.append(mask)
+            self.score.append(iou)
+        
+    def get_embed(self):
+        # image_embed: (F, 256, 64, 64)
+        return torch.stack(self.embed, dim=0)
+    
+    def get_prev_mask(self):
+        # (F, P, 256, 256)
+        return torch.stack(self.mask, dim=0)

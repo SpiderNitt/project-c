@@ -63,7 +63,7 @@ class Sam(nn.Module):
     def getImageEmbeddings(self, input_images):
         self.image_encoder.eval()
         with torch.no_grad():
-            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(input_images), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
+            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(input_images), -1, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
         return image_embeddings
     
     def getPropEmbeddings(self, image_embeddings, batched_input, low_res_pred, multimask_output=True, t=1):
@@ -113,7 +113,38 @@ class Sam(nn.Module):
         # log_dict["prop_sparse_embed"] = all_sparse_embeddings
             
         return outputs, log_dict
+    
+    def getTestPropEmbeddings(self, batched_input, current_frame_embeddings, prev_frames_embeddings, prev_masks, multimask_output=True):
+        _, mask_embeddings = self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
+        mask_embeddings = mask_embeddings.view(1, -1, batched_input['num_obj'], 256, 64, 64) # (1, F, P, 256, 64, 64)
+        embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
+        pos_embed = self.prompt_encoder.get_dense_pe()
 
+        all_sparse_embeddings, all_dense_embeddings, _ = self.propagation_module(embeddings, pos_embed)  # (1, P, 64, 64, 256)
+        all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (1, P, 256, 64, 64)
+
+        low_res_masks, iou_predictions = self.mask_decoder(
+            image_embeddings=current_frame_embeddings,
+            image_pe=pos_embed,
+            sparse_prompt_embeddings=all_sparse_embeddings[0],
+            dense_prompt_embeddings=all_dense_embeddings[0],
+            multimask_output=multimask_output,
+        )
+
+        max_iou, max_index = torch.max(iou_predictions, -1)
+        batch_indexing = torch.arange(len(max_index), device=max_index.device)
+
+        masks = self.postprocess_masks(
+            low_res_masks,
+            input_size=batched_input['resize_longest_size'],
+            original_size=batched_input['original_size']
+        )
+
+        low_res_masks = low_res_masks[batch_indexing, max_index] # (P, 256, 256)
+        masks = masks[batch_indexing, max_index] # (P, 256, 256)
+
+        return masks, low_res_masks, max_iou
+    
     def postprocess_masks(
         self,
         masks: torch.Tensor,
@@ -146,3 +177,6 @@ class Sam(nn.Module):
             masks, original_size, mode="bilinear", align_corners=False
         )
         return masks
+    
+    def train(self, mode: bool = False):
+        return super().train(False)
