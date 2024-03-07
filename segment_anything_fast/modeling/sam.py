@@ -63,7 +63,7 @@ class Sam(nn.Module):
     def getImageEmbeddings(self, input_images):
         self.image_encoder.eval()
         with torch.no_grad():
-            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(input_images), self.num_frames, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
+            image_embeddings = self.image_encoder(input_images.reshape(-1, 3, 1024, 1024)).reshape(len(input_images), -1, 256, 64, 64)  # Output -> (B, F=3, 256, 64, 64)
         return image_embeddings
     
     def getPropEmbeddings(self, image_embeddings, batched_input, low_res_pred, multimask_output=True, t=1):
@@ -117,14 +117,14 @@ class Sam(nn.Module):
     def getTestPropEmbeddings(self, batched_input, current_frame_embeddings, prev_frames_embeddings, prev_masks, multimask_output=True):
         _, mask_embeddings = self.prompt_encoder(points=None, boxes=None, masks=prev_masks)
         mask_embeddings = mask_embeddings.view(1, -1, batched_input['num_obj'], 256, 64, 64) # (1, F, P, 256, 64, 64)
-        embeddings = {"current_frame_embeddings": current_frame_embeddings.unsqueeze(0), "prev_frames_embeddings": prev_frames_embeddings.unsqueeze(0), "mask_embeddings": mask_embeddings}
+        embeddings = {"current_frame_embeddings": current_frame_embeddings, "prev_frames_embeddings": prev_frames_embeddings, "mask_embeddings": mask_embeddings}
         pos_embed = self.prompt_encoder.get_dense_pe()
 
         all_sparse_embeddings, all_dense_embeddings, _ = self.propagation_module(embeddings, pos_embed)  # (1, P, 64, 64, 256)
         all_dense_embeddings = all_dense_embeddings.permute(0, 1, 4, 2, 3) # (1, P, 256, 64, 64)
 
         low_res_masks, iou_predictions = self.mask_decoder(
-            image_embeddings=current_frame_embeddings.unsqueeze(0),
+            image_embeddings=current_frame_embeddings,
             image_pe=pos_embed,
             sparse_prompt_embeddings=all_sparse_embeddings[0],
             dense_prompt_embeddings=all_dense_embeddings[0],

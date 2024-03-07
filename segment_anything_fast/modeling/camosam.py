@@ -452,19 +452,19 @@ class CamoSam(L.LightningModule):
         os.makedirs(current_dir,exist_ok=True)
 
         first_gt = batch['first_gt']
-        first_embed = self.model.getImageEmbeddings(batch['image'][0].unsqueeze(0)) # (B, F=3, 256, 64, 64)
+        first_embed = self.model.getImageEmbeddings(batch['image'].unsqueeze(0)).squeeze() # (B, F=3, 256, 64, 64)
         memory.add(first_embed, first_gt, 1)
 
         gt = np.array(Image.open(batch['first_gt_path']).convert("P"))
         masks = Image.fromarray(gt.astype(np.uint8)).convert("P")
-        masks.save(current_dir + '/' + f'{batch['frame_num'][0]}.png')
+        masks.save(current_dir + '/' + f'{batch["frame_num"][0]}.png')
 
         for img, i in zip(batch['image'][1:], batch['frame_num'][1:]):
-            current_frame_embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)) # (B, F=3, 256, 64, 64)
+            current_frame_embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze(1) # (B, F=3, 256, 64, 64)
             prev_masks = memory.get_prev_mask()
             prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
 
-            prev_frames_embeddings = memory.get_embed()
+            prev_frames_embeddings = memory.get_embed().unsqueeze(0)
 
             masks, low_res_masks, max_iou = self.model.getTestPropEmbeddings(batch, current_frame_embeddings, prev_frames_embeddings, prev_masks, multimask_output=self.cfg.model.multimask_output)
             masks = masks.detach().cpu()
@@ -477,4 +477,4 @@ class CamoSam(L.LightningModule):
             masks.putpalette(batch['palette'])
             masks.save(current_dir + '/' f'{i}.png')
 
-            memory.add(current_frame_embeddings, (low_res_masks>0).squeeze(1).float(), max_iou.mean().item())
+            memory.add(current_frame_embeddings.squeeze(), (low_res_masks>0).squeeze(1).float(), max_iou.mean().item())

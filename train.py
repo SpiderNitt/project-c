@@ -14,24 +14,6 @@ from dataloaders.vos_dataset import get_loader as get_loader_moca
 from callbacks import WandB_Logger, InferCallback
 from config import cfg
 
-parser = argparse.ArgumentParser(description='Your script description')
-parser.add_argument('--stage', type=int, default=0, help='Stage')
-parser.add_argument('--bsize', type=int, default=4, help='Batch size')
-parser.add_argument('--num_frames', type=int, default=3, help='Number of frames')
-parser.add_argument('--ckpt', type=str, default=None, help='Path to checkpoint (default: None)')
-parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs (default: 10)')
-parser.add_argument('--lr', type=float, default=0, help='Learning Rate')
-
-args = parser.parse_args()
-print(cfg)
-# cfg.dataset.stage1 = bool(args.stage)
-# if cfg.dataset.stage1:
-#     cfg.dataset.num_frames = args.num_frames
-#     cfg.dataset.train_batch_size = args.bsize
-#     cfg.model.propagation_ckpt = args.ckpt
-#     cfg.num_epochs = args.num_epochs
-#     cfg.opt.learning_rate = args.lr
-
 L.seed_everything(2023, workers=True)
 torch.set_float32_matmul_precision('highest')
 
@@ -48,7 +30,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model = sam_model_fast_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
 model = CamoSam(cfg, model, ckpt=ckpt)
 
-wandblogger = WandbLogger(project="CVPR_SAM", save_code=True, settings=wandb.Settings(code_dir="."))
+wandblogger = WandbLogger(project="Proper", save_code=True, settings=wandb.Settings(code_dir="."))
 
 # torch._dynamo.config.verbose=True # for debugging
 lr_monitor = LearningRateMonitor(logging_interval='epoch')
@@ -71,7 +53,6 @@ trainer = L.Trainer(
     val_check_interval = None if cfg.dataset.stage1 else cfg.val_interval,
     enable_checkpointing=True,
     profiler='simple',
-    deterministic=True,
     # overfit_batches=1
 )
 if trainer.global_rank == 0:

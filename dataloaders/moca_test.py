@@ -85,7 +85,7 @@ class MOCA(Dataset):
             this_im = preprocess(this_im)
             img_list.append(this_im)
         first_gt, palette, num_obj, original_size, input_size = load_mask(mask[0])
-        
+
         return {
             'image': img_list, # (num_frames, 3, 1024, 1024) 
             'first_gt': first_gt, # (1, 256, 256)
@@ -97,6 +97,13 @@ class MOCA(Dataset):
             'info': self.keys[idx],
             'first_gt_path': mask[0]
         }
+    
+def collate_fn(batch):
+    output = {}
+    for key in batch[0].keys():
+        output[key] = batch[0][key]
+    
+    return output
 
 def get_test_loader():
     test_dataset = MOCA()
@@ -104,9 +111,7 @@ def get_test_loader():
         dataset=test_dataset,
         batch_size=1,
         shuffle=False,
-        persistent_workers=True,
         pin_memory=True,
+        collate_fn=collate_fn
     )
     return test_loader
-# print(MOCA()[0])
-MOCA()[0]
