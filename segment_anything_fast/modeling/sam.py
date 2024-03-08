@@ -179,4 +179,24 @@ class Sam(nn.Module):
         return masks
     
     def train(self, mode: bool = False):
-        return super().train(False)
+        if not self.cfg.model.requires_grad.image_encoder:
+            self.image_encoder.train(False)
+        else:
+            self.image_encoder.train(mode)
+            
+        if not self.cfg.model.requires_grad.prompt_encoder:
+            self.prompt_encoder.train(False)
+        else:
+            self.prompt_encoder.train(mode)
+
+        if not self.cfg.model.requires_grad.mask_decoder:
+            self.mask_decoder.train(False)
+        else:
+            self.mask_decoder.train(mode)
+            
+        if not self.cfg.model.requires_grad.propagation_module:
+            self.propagation_module.train(False)
+        else:
+            self.propagation_module.train(mode)
+        
+        return self
