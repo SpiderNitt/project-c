@@ -20,16 +20,18 @@ path = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
 
 parser = argparse.ArgumentParser(description='Your script description')
-parser.add_argument('--version', type=str, default="v0", help='Stage')
-
+parser.add_argument('--artifact', type=str, default="")
+parser.add_argument('--version', type=str, default="v0")
 args = parser.parse_args()
 
 ckpt = None
 wandblogger = WandbLogger(project="Proper", save_code=True, settings=wandb.Settings(code_dir="."))
-artifact = wandblogger.use_artifact(f'spider-r-d/Proper/model_8ttdc3tf:{args.version}', type='model')
+cfg.output_dir = f'results/{args.artifact.split("/")[-1]}/{args.version}'
+print(cfg.output_dir)
+artifact = wandblogger.use_artifact(f'{args.artifact}:{args.version}')
 artifact_dir = artifact.download()
-a = os.listdir(artifact_dir)[0]
-ckpt = torch.load(artifact_dir + '/' + a)
+ckpt_path = os.listdir(artifact_dir)[0]
+ckpt = torch.load(artifact_dir + '/' + ckpt_path)
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -40,16 +42,9 @@ trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
     precision="bf16-mixed",
-    max_epochs=cfg.num_epochs,
     logger=wandblogger,
     num_sanity_val_steps=0,
-    # strategy="ddp",
-    log_every_n_steps=15,
-    check_val_every_n_epoch=cfg.val_interval if cfg.dataset.stage1 else 1,
-    val_check_interval = None if cfg.dataset.stage1 else cfg.val_interval,
-    enable_checkpointing=True,
-    profiler='simple',
-    # overfit_batches=1
+    log_every_n_steps=1,
 )
 
 test_dataloader = get_test_loader()

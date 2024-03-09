@@ -15,7 +15,7 @@ cfg = {
     "focal_wt": 20,
     "num_tokens": 0,
     "dense_reg_wt": 0,
-    "output_dir": "results/v1",
+    "result_dir": "",
     "opt": {
         "learning_rate": 4e-4,
         "auto_lr": False,

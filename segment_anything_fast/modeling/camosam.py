@@ -448,22 +448,37 @@ class CamoSam(L.LightningModule):
     #     self.log_images(batch['info'], img_dict, sep_mask_dict, mask_dict, gt_mask_dict, output['iou'], batch_idx=batch_idx, train=False)
 
     def validation_step(self, batch, batch_idx):
-        memory = Memory(length = 2)
+        memory = Memory(length=2)
         pred_masks_list = []
-        # current_dir = self.cfg.output_dir + '/' + batch['info']
-        # os.makedirs(current_dir,exist_ok=True)
+        if not self.cfg.result_dir:
+            result_dir = f'results/{self.logger.version}/{self.current_epoch}/' + batch['info']
+        else:
+            result_dir = self.cfg.result_dir + '/' + batch['info']
+        embeddings_dir = os.path.join('embeddings', batch['info'])
+        os.makedirs(result_dir,exist_ok=True)
+        os.makedirs(embeddings_dir, exist_ok=True)
+
+        # Define a function to handle embedding fetching or saving
+        def get_or_save_embeddings(img, idx):
+            embedding_path = os.path.join(embeddings_dir, f'{idx}.pt')
+            if os.path.exists(embedding_path):
+                embeddings = torch.load(embedding_path)
+            else:
+                embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze()
+                torch.save(embeddings, embedding_path)
+            return embeddings
 
         first_gt = batch['first_gt']
-        first_embed = self.model.getImageEmbeddings(batch['image'][0].unsqueeze(0)).squeeze() # (B, F=3, 256, 64, 64)
+        first_embed = get_or_save_embeddings(batch['image'][0], batch['frame_num'][0])
         memory.add(first_embed, first_gt, 1)
 
         gt = np.asarray(Image.open(batch['first_gt_path']), dtype=np.int32) // 255
         pred_masks_list.append(gt)
-        # masks = Image.fromarray(gt.astype(np.uint8)).convert("P")
-        # masks.save(current_dir + '/' + f'{batch["frame_num"][0]}.png')
+        masks = Image.fromarray(gt * 255).convert("P")
+        masks.save(result_dir + '/' + f'{batch["frame_num"][0]}.png')
 
-        for img, i in zip(batch['image'][1:], batch['frame_num'][1:]):
-            current_frame_embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze(1) # (B, F=3, 256, 64, 64)
+        for img, frame_num in zip(batch['image'][1:], batch['frame_num'][1:]):
+            current_frame_embeddings = get_or_save_embeddings(img, frame_num)
             prev_masks = memory.get_prev_mask()
             prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
 
@@ -476,14 +491,14 @@ class CamoSam(L.LightningModule):
 
             masks = masks.cpu().numpy().astype(np.int32)
             pred_masks_list.append(masks)
-            
-            # masks = Image.fromarray(masks*255).convert("P")
-            # masks.putpalette(batch['palette'])
-            # masks.save(current_dir + '/' f'{i}.png')
 
-            memory.add(current_frame_embeddings.squeeze(), (low_res_masks>0).squeeze(1).float(), max_iou.mean().item())
+            masks = Image.fromarray(masks*255).convert("P")
+            masks.putpalette(batch['palette'])
+            masks.save(result_dir + '/' f'{frame_num}.png')
+
+            memory.add(current_frame_embeddings.squeeze(), (low_res_masks > 0).squeeze(1).float(), max_iou.mean().item())
         return pred_masks_list
     
     def on_validation_batch_end(self, outputs, batch, batch_idx) -> None:
         metrics_all = metrics_eval(outputs, batch['info'])
-        self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+        self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True, batch_size=1)
