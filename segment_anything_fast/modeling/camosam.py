@@ -464,12 +464,12 @@ class CamoSam(L.LightningModule):
             if os.path.exists(embedding_path):
                 embeddings = torch.load(embedding_path)
             else:
-                embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze()
+                embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze(1)
                 torch.save(embeddings, embedding_path)
             return embeddings
 
         first_gt = batch['first_gt']
-        first_embed = get_or_save_embeddings(batch['image'][0], batch['frame_num'][0])
+        first_embed = get_or_save_embeddings(batch['image'][0], batch['frame_num'][0]).squeeze()
         memory.add(first_embed, first_gt, 1)
 
         gt = np.asarray(Image.open(batch['first_gt_path']), dtype=np.int32) // 255

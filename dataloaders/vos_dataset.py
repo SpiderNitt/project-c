@@ -321,7 +321,8 @@ def get_loader(cfg):
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
+            drop_last=True
         )
         
         print("Validation Samples: ",len(val_list))
@@ -339,7 +340,8 @@ def get_loader(cfg):
             persistent_workers=cfg.persistent_workers,
             num_workers=cfg.num_workers,
             pin_memory=cfg.pin_memory,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
+            drop_last=True
         )
 
     elif cfg.name == "youtube":
