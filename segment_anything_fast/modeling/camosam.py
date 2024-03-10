@@ -107,6 +107,23 @@ class CamoSam(L.LightningModule):
             self.logger.log_image(f"Images/{'train' if train else 'val'}/{information[frame_idx]['name']}", [img_dict[t][frame_idx] for t in range(start_idx, self.cfg.dataset.num_frames)], step=self.global_step, masks=log_dict,
                                 caption=[f"Epoch_{self.current_epoch}_IoU_{[str(iou_obj)[:5] for iou_obj in iou_dict[t][frame_idx].cpu().tolist()]}_Frame_{information[frame_idx]['frames']}" for t in range(start_idx, self.cfg.dataset.num_frames)])
    
+
+    def bootstrapped_ce(self, inputs, targets, it):
+        inputs = inputs.flatten(-2)	 # [num_true_obj, C, HxW]
+        targets = targets.flatten(-2) # [num_true_obj, C, HxW]
+        if it < self.cfg.start_warm:
+            return F.binary_cross_entropy_with_logits(inputs, targets, reduction='none').mean(dim=-1)
+
+        raw_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        num_pixels = raw_loss.numel()
+
+        if it > self.cfg.end_warm:
+            this_p = self.cfg.top_p
+        else:
+            this_p = self.cfg.top_p + (1-self.cfg.top_p)*((self.cfg.end_warm-it)/(self.cfg.end_warm-self.cfg.start_warm))
+        loss, _ = torch.topk(raw_loss, int(num_pixels * this_p), sorted=False, dim=-1)
+        return loss.mean(dim=-1) # [num_true_obj, C]
+    
     def sigmoid_focal_loss(
         self,
         inputs: torch.Tensor,
@@ -199,6 +216,7 @@ class CamoSam(L.LightningModule):
 
         # output_0, output_1, prop_pos_embed = self(batch, self.cfg.model.multimask_output)
         loss_focal = 0
+        loss_bce = 0
         loss_dice = 0
         loss_iou = 0
         dense_regularization = 0
@@ -225,6 +243,7 @@ class CamoSam(L.LightningModule):
                 
                 pred_masks_sigmoid = torch.sigmoid(pred_masks)
                 loss_focal_tmp = self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
+                loss_bce_tmp = self.bootstrapped_ce(pred_masks, gt_mask, self.global_step)
                 loss_dice_tmp = self.dice_loss(pred_masks_sigmoid, gt_mask)
                 loss_iou_tmp = F.mse_loss(
                     each_output["iou_predictions"],
@@ -234,6 +253,7 @@ class CamoSam(L.LightningModule):
                 dense_regularization_tmp = torch.mean((dense_embed ** 2).flatten(1), dim=-1, keepdim=True) # [P, 1]
                 loss_tmp = (
                     self.cfg.focal_wt * loss_focal_tmp
+                    + self.cfg.bce_wt * loss_bce_tmp
                     + loss_dice_tmp
                     + loss_iou_tmp
                     + self.cfg.dense_reg_wt * dense_regularization_tmp
@@ -243,6 +263,7 @@ class CamoSam(L.LightningModule):
                 loss_total += loss_tmp[selector].sum() # (num_true_obj)
 
                 loss_focal += loss_focal_tmp[batch_indexing, min_idx][selector].sum()
+                loss_bce += loss_bce_tmp[batch_indexing, min_idx][selector].sum()
                 loss_dice += loss_dice_tmp[batch_indexing, min_idx][selector].sum()
                 loss_iou += loss_iou_tmp[batch_indexing, min_idx][selector].sum() # [num_true_obj]
                 dense_regularization += dense_regularization_tmp[selector].sum()
@@ -256,12 +277,13 @@ class CamoSam(L.LightningModule):
 
         loss_total = (loss_total) / (total_num_objects)
         avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
+        avg_bce = (self.cfg.bce_wt * loss_bce) / (total_num_objects)
         avg_dice = loss_dice / (total_num_objects)
         avg_iou = loss_iou / (total_num_objects)
         avg_dense_regularization = (self.cfg.dense_reg_wt * dense_regularization) / (total_num_objects)
         
         self.train_benchmark.append(loss_total.item())
-        log_dict = {"Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou, "Loss/train/dense_reg": avg_dense_regularization}
+        log_dict = {"Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/bce_loss" : avg_bce, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou, "Loss/train/dense_reg": avg_dense_regularization}
 
         for key in prop_log_dict:
             log_dict[f'{key}/min'] = prop_log_dict[key].min()
@@ -274,80 +296,6 @@ class CamoSam(L.LightningModule):
 
         return {'loss': loss_total, 'masks': pred_masks_dict, 'iou': iou_pred_dict} # List([num_true_obj, H, W])
     
-    # def validation_step(self, batch, batch_idx):
-    #     img_embeddings = self.model.getImageEmbeddings(batch['image']) # (B, F=3, 256, 64, 64)
-    #     bs = len(img_embeddings)
-
-    #     pred_masks_dict = {}
-    #     iou_pred_dict = {}
-
-    #     # output_0, output_1, prop_pos_embed = self(batch, self.cfg.model.multimask_output)
-    #     loss_focal = 0
-    #     loss_dice = 0
-    #     loss_iou = 0
-    #     dense_regularization = 0
-    #     loss_total = 0
-
-    #     low_res_pred_list = torch.empty((bs, 0, self.cfg.dataset.max_num_obj, 256, 256), device=batch['image'].device)
-    #     batch_indexing = torch.arange(self.cfg.dataset.max_num_obj, device=batch['image'].device) # [P]
-    #     total_num_objects = 0
-
-    #     start_idx = 1 if self.cfg.dataset.stage1 else self.cfg.dataset.num_frames-1
-    #     for t in range(start_idx, self.cfg.dataset.num_frames):
-    #         outputs, prop_log_dict = self.model.getPropEmbeddings(img_embeddings, batch, low_res_pred_list, multimask_output=self.cfg.model.multimask_output, t=t)
-    #         low_res_pred_list_tmp = []
-    #         pred_masks_dict[t] = []
-    #         iou_pred_dict[t] = []
-
-    #         for each_output, gt_mask, dense_embed, selector, resize_longest_size in zip(outputs, batch['gt_mask_256'], prop_log_dict["prop_dense_embed"], batch['selector'], batch['resize_longest_size']): # selector = [True, True, False]
-    #             total_num_objects += selector.sum()
-    #             pred_masks = each_output["low_res_logits"][..., :resize_longest_size[0]//4, :resize_longest_size[1]//4] # [P=3, C, H, W]
-    #             # pred_masks_list.append(pred_masks.detach())
-    #             gt_mask = gt_mask[t].unsqueeze(1) # [P, 1, H, W]
-    #             gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W] 
-    #             gt_mask = gt_mask[..., :resize_longest_size[0]//4, :resize_longest_size[1]//4]
-                
-    #             pred_masks_sigmoid = torch.sigmoid(pred_masks)
-    #             loss_focal_tmp = self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
-    #             loss_dice_tmp = self.dice_loss(pred_masks_sigmoid, gt_mask)
-    #             loss_iou_tmp = F.mse_loss(
-    #                 each_output["iou_predictions"],
-    #                 self.iou(pred_masks_sigmoid, gt_mask),
-    #                 reduction="none",
-    #             )
-    #             dense_regularization_tmp = torch.mean((dense_embed ** 2).flatten(1), dim=-1, keepdim=True) # [P, 1]
-    #             loss_tmp = (
-    #                 self.cfg.focal_wt * loss_focal_tmp
-    #                 + loss_dice_tmp
-    #                 + loss_iou_tmp
-    #                 + self.cfg.dense_reg_wt * dense_regularization_tmp
-    #             ) # [P, C]
-
-    #             loss_tmp, min_idx = torch.min(loss_tmp, -1) # [P]
-    #             loss_total += loss_tmp[selector].sum() # (num_true_obj)
-
-    #             loss_focal += loss_focal_tmp[batch_indexing, min_idx][selector].sum()
-    #             loss_dice += loss_dice_tmp[batch_indexing, min_idx][selector].sum()
-    #             loss_iou += loss_iou_tmp[batch_indexing, min_idx][selector].sum() # [num_true_obj]
-    #             dense_regularization += dense_regularization_tmp[selector].sum()
-
-    #             low_res_pred_list_tmp.append(each_output["low_res_logits"][batch_indexing, min_idx]) # (P=3, C, 256, 256) -> (P=3, 256, 256)
-    #             pred_masks_dict[t].append(torch.sigmoid(each_output["masks"])[batch_indexing, min_idx][selector].detach())
-    #             iou_pred_dict[t].append(each_output["iou_predictions"][batch_indexing, min_idx][selector].detach())
-            
-    #         low_res_pred_list_tmp = torch.stack(low_res_pred_list_tmp).unsqueeze(1) # (B, 1, P=3, 256, 256)
-    #         low_res_pred_list = torch.cat([low_res_pred_list, low_res_pred_list_tmp], dim=1) # (B, t, P=3, 256, 256)
-
-    #     loss_total = (loss_total) / (total_num_objects)
-    #     avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
-    #     avg_dice = loss_dice / (total_num_objects)
-    #     avg_iou = loss_iou / (total_num_objects)
-    #     avg_dense_regularization = (self.cfg.dense_reg_wt * dense_regularization) / (total_num_objects)
-
-    #     self.val_benchmark.append(loss_total.item())
-    #     self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou, "Loss/val/dense_reg": avg_dense_regularization}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
-
-    #     return {'loss': loss_total, 'masks': pred_masks_dict, 'iou': iou_pred_dict} # List([num_true_obj, H, W])
     
     def on_train_batch_end(self, output, batch, batch_idx):
         if self.check_frequency(self.current_epoch):
@@ -399,106 +347,187 @@ class CamoSam(L.LightningModule):
             if batch_idx < 5:
                 self.log_images(batch['info'], img_dict, sep_mask_dict, mask_dict, gt_mask_dict, output['iou'], batch_idx=batch_idx, train=True)
     
-    # def on_validation_batch_end(self, output, batch, batch_idx):
-    #     img_dict = {}
-    #     sep_mask_dict = {}
-    #     mask_dict = {}
-    #     gt_mask_dict = {}
-    #     sep_gt_mask_dict = {}
-    #     metrics_all = {}
-
-    #     start_idx = 1 if self.cfg.dataset.stage1 else self.cfg.dataset.num_frames-1
-    #     for t in range(start_idx, self.cfg.dataset.num_frames):
-    #         output_ = output["masks"][t]
-    #         img_dict[t] = []
-    #         sep_mask_dict[t] = []
-    #         mask_dict[t] = []
-    #         gt_mask_dict[t] = []
-    #         sep_gt_mask_dict[t] = []
-
-    #         total_jaccard = 0
-    #         total_dice = 0
-    #         total_objects = 0
-
-
-    #         for each_output, gt_mask, cropped_img, selector in zip(output_, batch['gt_mask'], batch['cropped_img'], batch['selector']):
-    #             total_objects += selector.sum()
-    #             gt_mask = gt_mask[t][selector]
-    #             sep_mask_dict[t].append(each_output>0.5)
-    #             sep_gt_mask_dict[t].append(gt_mask.type(torch.int8))
-
-    #             j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
-    #             total_jaccard += j
-    #             total_dice += d
-
-    #             max_, max_pos = torch.max(gt_mask, dim=0)
-    #             gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
-    #             gt_mask_dict[t].append(gt_mask)
-
-    #             max_, max_pos = torch.max(each_output, dim=0)
-    #             mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
-    #             mask_dict[t].append(mask)
-                
-    #             img_dict[t].append(cropped_img[t])
-    #         metrics_all[f'Metrics/val/jaccard_single_obj_{t}'] = total_jaccard / total_objects
-    #         metrics_all[f'Metrics/val/dice_single_obj_{t}'] = total_dice / total_objects
-
-    #     self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
-        
-    #     self.log_images(batch['info'], img_dict, sep_mask_dict, mask_dict, gt_mask_dict, output['iou'], batch_idx=batch_idx, train=False)
 
     def validation_step(self, batch, batch_idx):
-        memory = Memory(length=2)
-        pred_masks_list = []
-        if not self.cfg.result_dir:
-            result_dir = f'results/{self.logger.version}/{self.current_epoch}/' + batch['info']
-        else:
-            result_dir = self.cfg.result_dir + '/' + batch['info']
-        embeddings_dir = os.path.join('embeddings', batch['info'])
-        os.makedirs(result_dir,exist_ok=True)
-        os.makedirs(embeddings_dir, exist_ok=True)
-
-        # Define a function to handle embedding fetching or saving
-        def get_or_save_embeddings(img, idx):
-            embedding_path = os.path.join(embeddings_dir, f'{idx}.pt')
-            if os.path.exists(embedding_path):
-                embeddings = torch.load(embedding_path)
+        if self.cfg.stage1:
+            memory = Memory(length=2)
+            pred_masks_list = []
+            if not self.cfg.result_dir:
+                result_dir = f'results/{self.logger.version}/{self.current_epoch}/' + batch['info']
             else:
-                embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze(1)
-                torch.save(embeddings, embedding_path)
-            return embeddings
+                result_dir = self.cfg.result_dir + '/' + batch['info']
+            embeddings_dir = os.path.join('embeddings', batch['info'])
+            os.makedirs(result_dir,exist_ok=True)
+            os.makedirs(embeddings_dir, exist_ok=True)
 
-        first_gt = batch['first_gt']
-        first_embed = get_or_save_embeddings(batch['image'][0], batch['frame_num'][0]).squeeze()
-        memory.add(first_embed, first_gt, 1)
+            # Define a function to handle embedding fetching or saving
+            def get_or_save_embeddings(img, idx):
+                embedding_path = os.path.join(embeddings_dir, f'{idx}.pt')
+                if os.path.exists(embedding_path):
+                    embeddings = torch.load(embedding_path)
+                else:
+                    embeddings = self.model.getImageEmbeddings(img.unsqueeze(0)).squeeze(1)
+                    torch.save(embeddings, embedding_path)
+                return embeddings
 
-        gt = np.asarray(Image.open(batch['first_gt_path']), dtype=np.int32) // 255
-        pred_masks_list.append(gt)
-        masks = Image.fromarray(gt * 255).convert("P")
-        masks.save(result_dir + '/' + f'{batch["frame_num"][0]}.png')
+            first_gt = batch['first_gt']
+            first_embed = get_or_save_embeddings(batch['image'][0], batch['frame_num'][0]).squeeze()
+            memory.add(first_embed, first_gt, 1)
 
-        for img, frame_num in zip(batch['image'][1:], batch['frame_num'][1:]):
-            current_frame_embeddings = get_or_save_embeddings(img, frame_num)
-            prev_masks = memory.get_prev_mask()
-            prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
+            gt = np.asarray(Image.open(batch['first_gt_path']), dtype=np.int32) // 255
+            pred_masks_list.append(gt)
+            masks = Image.fromarray(gt * 255).convert("P")
+            masks.save(result_dir + '/' + f'{batch["frame_num"][0]}.png')
 
-            prev_frames_embeddings = memory.get_embed().unsqueeze(0)
+            for img, frame_num in zip(batch['image'][1:], batch['frame_num'][1:]):
+                current_frame_embeddings = get_or_save_embeddings(img, frame_num)
+                prev_masks = memory.get_prev_mask()
+                prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])
 
-            masks, low_res_masks, max_iou = self.model.getTestPropEmbeddings(batch, current_frame_embeddings, prev_frames_embeddings, prev_masks, multimask_output=self.cfg.model.multimask_output)
-            masks = masks.detach().cpu()
-            max_, max_pos = torch.max(masks, dim=0)
-            masks = ((max_pos+1) * (max_ > 0)).type(torch.int8)
+                prev_frames_embeddings = memory.get_embed().unsqueeze(0)
 
-            masks = masks.cpu().numpy().astype(np.int32)
-            pred_masks_list.append(masks)
+                masks, low_res_masks, max_iou = self.model.getTestPropEmbeddings(batch, current_frame_embeddings, prev_frames_embeddings, prev_masks, multimask_output=self.cfg.model.multimask_output)
+                masks = masks.detach().cpu()
+                max_, max_pos = torch.max(masks, dim=0)
+                masks = ((max_pos+1) * (max_ > 0)).type(torch.int8)
 
-            masks = Image.fromarray(masks*255).convert("P")
-            masks.putpalette(batch['palette'])
-            masks.save(result_dir + '/' f'{frame_num}.png')
+                masks = masks.cpu().numpy().astype(np.int32)
+                pred_masks_list.append(masks)
 
-            memory.add(current_frame_embeddings.squeeze(), (low_res_masks > 0).squeeze(1).float(), max_iou.mean().item())
-        return pred_masks_list
-    
-    def on_validation_batch_end(self, outputs, batch, batch_idx) -> None:
-        metrics_all = metrics_eval(outputs, batch['info'])
-        self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True, batch_size=1)
+                masks = Image.fromarray(masks*255).convert("P")
+                masks.putpalette(batch['palette'])
+                masks.save(result_dir + '/' f'{frame_num}.png')
+
+                memory.add(current_frame_embeddings.squeeze(), (low_res_masks > 0).squeeze(1).float(), max_iou.mean().item())
+            return pred_masks_list
+        else:
+            img_embeddings = self.model.getImageEmbeddings(batch['image']) # (B, F=3, 256, 64, 64)
+            bs = len(img_embeddings)
+
+            pred_masks_dict = {}
+            iou_pred_dict = {}
+
+            # output_0, output_1, prop_pos_embed = self(batch, self.cfg.model.multimask_output)
+            loss_focal = 0
+            loss_bce = 0
+            loss_dice = 0
+            loss_iou = 0
+            dense_regularization = 0
+            loss_total = 0
+
+            low_res_pred_list = torch.empty((bs, 0, self.cfg.dataset.max_num_obj, 256, 256), device=batch['image'].device)
+            batch_indexing = torch.arange(self.cfg.dataset.max_num_obj, device=batch['image'].device) # [P]
+            total_num_objects = 0
+
+            start_idx = 1 if self.cfg.dataset.stage1 else self.cfg.dataset.num_frames-1
+            for t in range(start_idx, self.cfg.dataset.num_frames):
+                outputs, prop_log_dict = self.model.getPropEmbeddings(img_embeddings, batch, low_res_pred_list, multimask_output=self.cfg.model.multimask_output, t=t)
+                low_res_pred_list_tmp = []
+                pred_masks_dict[t] = []
+                iou_pred_dict[t] = []
+
+                for each_output, gt_mask, dense_embed, selector, resize_longest_size in zip(outputs, batch['gt_mask_256'], prop_log_dict["prop_dense_embed"], batch['selector'], batch['resize_longest_size']): # selector = [True, True, False]
+                    total_num_objects += selector.sum()
+                    pred_masks = each_output["low_res_logits"][..., :resize_longest_size[0]//4, :resize_longest_size[1]//4] # [P=3, C, H, W]
+                    # pred_masks_list.append(pred_masks.detach())
+                    gt_mask = gt_mask[t].unsqueeze(1) # [P, 1, H, W]
+                    gt_mask = gt_mask.repeat((1, pred_masks.shape[1], 1, 1)) # [P, C, H, W] 
+                    gt_mask = gt_mask[..., :resize_longest_size[0]//4, :resize_longest_size[1]//4]
+                    
+                    pred_masks_sigmoid = torch.sigmoid(pred_masks)
+                    loss_focal_tmp = self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
+                    loss_bce_tmp = self.bootstrapped_ce(pred_masks, gt_mask, self.global_step)
+                    loss_dice_tmp = self.dice_loss(pred_masks_sigmoid, gt_mask)
+                    loss_iou_tmp = F.mse_loss(
+                        each_output["iou_predictions"],
+                        self.iou(pred_masks_sigmoid, gt_mask),
+                        reduction="none",
+                    )
+                    dense_regularization_tmp = torch.mean((dense_embed ** 2).flatten(1), dim=-1, keepdim=True) # [P, 1]
+                    loss_tmp = (
+                        self.cfg.focal_wt * loss_focal_tmp
+                        + self.cfg.bce_wt * loss_bce_tmp
+                        + loss_dice_tmp
+                        + loss_iou_tmp
+                        + self.cfg.dense_reg_wt * dense_regularization_tmp
+                    ) # [P, C]
+
+                    loss_tmp, min_idx = torch.min(loss_tmp, -1) # [P]
+                    loss_total += loss_tmp[selector].sum() # (num_true_obj)
+
+                    loss_focal += loss_focal_tmp[batch_indexing, min_idx][selector].sum()
+                    loss_bce += loss_bce_tmp[batch_indexing, min_idx][selector].sum()
+                    loss_dice += loss_dice_tmp[batch_indexing, min_idx][selector].sum()
+                    loss_iou += loss_iou_tmp[batch_indexing, min_idx][selector].sum() # [num_true_obj]
+                    dense_regularization += dense_regularization_tmp[selector].sum()
+
+                    low_res_pred_list_tmp.append(each_output["low_res_logits"][batch_indexing, min_idx]) # (P=3, C, 256, 256) -> (P=3, 256, 256)
+                    pred_masks_dict[t].append(torch.sigmoid(each_output["masks"])[batch_indexing, min_idx][selector].detach())
+                    iou_pred_dict[t].append(each_output["iou_predictions"][batch_indexing, min_idx][selector].detach())
+                
+                low_res_pred_list_tmp = torch.stack(low_res_pred_list_tmp).unsqueeze(1) # (B, 1, P=3, 256, 256)
+                low_res_pred_list = torch.cat([low_res_pred_list, low_res_pred_list_tmp], dim=1) # (B, t, P=3, 256, 256)
+
+            loss_total = (loss_total) / (total_num_objects)
+            avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
+            avg_bce = (self.cfg.bce_wt * loss_bce) / (total_num_objects)
+            avg_dice = loss_dice / (total_num_objects)
+            avg_iou = loss_iou / (total_num_objects)
+            avg_dense_regularization = (self.cfg.dense_reg_wt * dense_regularization) / (total_num_objects)
+
+            self.val_benchmark.append(loss_total.item())
+            self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/bce_loss" : avg_bce, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou, "Loss/val/dense_reg": avg_dense_regularization}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
+
+            return {'loss': loss_total, 'masks': pred_masks_dict, 'iou': iou_pred_dict} # List([num_true_obj, H, W])
+        
+    def on_validation_batch_end(self, output, batch, batch_idx) -> None:
+        if self.cfg.stage1:
+            metrics_all = metrics_eval(output, batch['info'])
+            self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True, batch_size=1)
+        else:
+            img_dict = {}
+            sep_mask_dict = {}
+            mask_dict = {}
+            gt_mask_dict = {}
+            sep_gt_mask_dict = {}
+            metrics_all = {}
+
+            start_idx = 1 if self.cfg.dataset.stage1 else self.cfg.dataset.num_frames-1
+            for t in range(start_idx, self.cfg.dataset.num_frames):
+                output_ = output["masks"][t]
+                img_dict[t] = []
+                sep_mask_dict[t] = []
+                mask_dict[t] = []
+                gt_mask_dict[t] = []
+                sep_gt_mask_dict[t] = []
+
+                total_jaccard = 0
+                total_dice = 0
+                total_objects = 0
+
+
+                for each_output, gt_mask, cropped_img, selector in zip(output_, batch['gt_mask'], batch['cropped_img'], batch['selector']):
+                    total_objects += selector.sum()
+                    gt_mask = gt_mask[t][selector]
+                    sep_mask_dict[t].append(each_output>0.5)
+                    sep_gt_mask_dict[t].append(gt_mask.type(torch.int8))
+
+                    j, d = jaccard_dice(each_output>0.5, gt_mask.type(torch.bool))
+                    total_jaccard += j
+                    total_dice += d
+
+                    max_, max_pos = torch.max(gt_mask, dim=0)
+                    gt_mask = ((max_pos+1) * (max_)).type(torch.int8)
+                    gt_mask_dict[t].append(gt_mask)
+
+                    max_, max_pos = torch.max(each_output, dim=0)
+                    mask = ((max_pos+1) * (max_ > 0.5)).type(torch.int8)
+                    mask_dict[t].append(mask)
+                    
+                    img_dict[t].append(cropped_img[t])
+                metrics_all[f'Metrics/val/jaccard_single_obj_{t}'] = total_jaccard / total_objects
+                metrics_all[f'Metrics/val/dice_single_obj_{t}'] = total_dice / total_objects
+
+            self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True)
+            
+            self.log_images(batch['info'], img_dict, sep_mask_dict, mask_dict, gt_mask_dict, output['iou'], batch_idx=batch_idx, train=False)

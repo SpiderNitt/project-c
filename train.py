@@ -11,11 +11,16 @@ from pathlib import Path
 
 from dataloaders.camo_dataset import get_loader
 from dataloaders.vos_dataset import get_loader as get_loader_moca
+from dataloaders.moca_test import get_test_loader
 from callbacks import WandB_Logger, InferCallback
 from config import cfg
 
 L.seed_everything(2023, workers=True)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 torch.set_float32_matmul_precision('highest')
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
 
 path = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
@@ -53,13 +58,15 @@ trainer = L.Trainer(
     val_check_interval = None if cfg.dataset.stage1 else cfg.val_interval,
     enable_checkpointing=True,
     profiler='simple',
+    deterministic=True,
     # overfit_batches=1
 )
 if trainer.global_rank == 0:
     wandblogger.experiment.config.update(dict(cfg))
 
 if cfg.dataset.stage1:
-    train_dataloader, validation_dataloader = get_loader_moca(cfg.dataset)
+    train_dataloader, _ = get_loader_moca(cfg.dataset)
+    validation_dataloader = get_test_loader()
 else:
     train_dataloader, _ = get_loader(cfg.dataset)
     _, validation_dataloader = get_loader_moca(cfg.dataset)
