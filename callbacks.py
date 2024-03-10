@@ -21,19 +21,19 @@ class WandB_Logger(Callback):
             Path(os.path.join(self.cfg.model_checkpoint_at), self.version).mkdir(parents=True, exist_ok=True)
             model_name = f"{os.path.join(self.cfg.model_checkpoint_at, self.version, f'{pl_module.current_epoch}_epoch_{trainer.global_step}_global_step.pth')}"
             
-            if pl_module.current_epoch == 0:
-                pl_module.train_benchmark = []
-                pl_module.val_benchmark = []
-            else:
-                pl_module.train_benchmark = sum(pl_module.train_benchmark) / len(pl_module.train_benchmark)
-                pl_module.val_benchmark = sum(pl_module.val_benchmark) / len(pl_module.val_benchmark)
+            # if pl_module.current_epoch == 0:
+            #     pl_module.train_benchmark = []
+            #     pl_module.val_benchmark = []
+            # else:
+            #     pl_module.train_benchmark = sum(pl_module.train_benchmark) / len(pl_module.train_benchmark)
+            #     pl_module.val_benchmark = sum(pl_module.val_benchmark) / len(pl_module.val_benchmark)
             
             model_dict = {
                 'cfg': self.cfg,
                 'epoch': pl_module.current_epoch,
                 'model_state_dict': pl_module.model.propagation_module.state_dict(),
                 'optimizer_state_dict': pl_module.optimizers().state_dict() if type(pl_module.optimizers())!=list else {},
-                'benchmark': [pl_module.train_benchmark, pl_module.val_benchmark],
+                # 'benchmark': [pl_module.train_benchmark, pl_module.val_benchmark],
                 'decoder_state_dict': pl_module.model.mask_decoder.state_dict() if self.cfg.model.requires_grad.mask_decoder else {},
             }
             
@@ -44,8 +44,8 @@ class WandB_Logger(Callback):
             my_model.add_file(model_name)
             self.wnb.log_artifact(my_model)
                 
-            pl_module.train_benchmark = []
-            pl_module.val_benchmark = []
+            # pl_module.train_benchmark = []
+            # pl_module.val_benchmark = []
 
 
 class InferCallback(Callback):
