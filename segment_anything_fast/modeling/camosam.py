@@ -216,7 +216,7 @@ class CamoSam(L.LightningModule):
 
         # output_0, output_1, prop_pos_embed = self(batch, self.cfg.model.multimask_output)
         loss_focal = 0
-        loss_bce = 0
+        # loss_bce = 0
         loss_dice = 0
         loss_iou = 0
         dense_regularization = 0
@@ -243,7 +243,7 @@ class CamoSam(L.LightningModule):
                 
                 pred_masks_sigmoid = torch.sigmoid(pred_masks)
                 loss_focal_tmp = self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
-                loss_bce_tmp = self.bootstrapped_ce(pred_masks, gt_mask, self.global_step)
+                # loss_bce_tmp = self.bootstrapped_ce(pred_masks, gt_mask, self.global_step)
                 loss_dice_tmp = self.dice_loss(pred_masks_sigmoid, gt_mask)
                 loss_iou_tmp = F.mse_loss(
                     each_output["iou_predictions"],
@@ -253,7 +253,7 @@ class CamoSam(L.LightningModule):
                 dense_regularization_tmp = torch.mean((dense_embed ** 2).flatten(1), dim=-1, keepdim=True) # [P, 1]
                 loss_tmp = (
                     self.cfg.focal_wt * loss_focal_tmp
-                    + self.cfg.bce_wt * loss_bce_tmp
+                    # + self.cfg.bce_wt * loss_bce_tmp
                     + loss_dice_tmp
                     + loss_iou_tmp
                     + self.cfg.dense_reg_wt * dense_regularization_tmp
@@ -263,7 +263,7 @@ class CamoSam(L.LightningModule):
                 loss_total += loss_tmp[selector].sum() # (num_true_obj)
 
                 loss_focal += loss_focal_tmp[batch_indexing, min_idx][selector].sum()
-                loss_bce += loss_bce_tmp[batch_indexing, min_idx][selector].sum()
+                # loss_bce += loss_bce_tmp[batch_indexing, min_idx][selector].sum()
                 loss_dice += loss_dice_tmp[batch_indexing, min_idx][selector].sum()
                 loss_iou += loss_iou_tmp[batch_indexing, min_idx][selector].sum() # [num_true_obj]
                 dense_regularization += dense_regularization_tmp[selector].sum()
@@ -277,13 +277,13 @@ class CamoSam(L.LightningModule):
 
         loss_total = (loss_total) / (total_num_objects)
         avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
-        avg_bce = (self.cfg.bce_wt * loss_bce) / (total_num_objects)
+        # avg_bce = (self.cfg.bce_wt * loss_bce) / (total_num_objects)
         avg_dice = loss_dice / (total_num_objects)
         avg_iou = loss_iou / (total_num_objects)
         avg_dense_regularization = (self.cfg.dense_reg_wt * dense_regularization) / (total_num_objects)
         
         self.train_benchmark.append(loss_total.item())
-        log_dict = {"Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/bce_loss" : avg_bce, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou, "Loss/train/dense_reg": avg_dense_regularization}
+        log_dict = {"Loss/train/total_loss" : loss_total, "Loss/train/focal_loss" : avg_focal, "Loss/train/dice_loss" : avg_dice, "Loss/train/iou_loss" : avg_iou, "Loss/train/dense_reg": avg_dense_regularization}
 
         for key in prop_log_dict:
             log_dict[f'{key}/min'] = prop_log_dict[key].min()
@@ -409,7 +409,7 @@ class CamoSam(L.LightningModule):
 
             # output_0, output_1, prop_pos_embed = self(batch, self.cfg.model.multimask_output)
             loss_focal = 0
-            loss_bce = 0
+            # loss_bce = 0
             loss_dice = 0
             loss_iou = 0
             dense_regularization = 0
@@ -436,7 +436,7 @@ class CamoSam(L.LightningModule):
                     
                     pred_masks_sigmoid = torch.sigmoid(pred_masks)
                     loss_focal_tmp = self.sigmoid_focal_loss(pred_masks, gt_mask, pred_masks_sigmoid)
-                    loss_bce_tmp = self.bootstrapped_ce(pred_masks, gt_mask, self.global_step)
+                    # loss_bce_tmp = self.bootstrapped_ce(pred_masks, gt_mask, self.global_step)
                     loss_dice_tmp = self.dice_loss(pred_masks_sigmoid, gt_mask)
                     loss_iou_tmp = F.mse_loss(
                         each_output["iou_predictions"],
@@ -446,7 +446,7 @@ class CamoSam(L.LightningModule):
                     dense_regularization_tmp = torch.mean((dense_embed ** 2).flatten(1), dim=-1, keepdim=True) # [P, 1]
                     loss_tmp = (
                         self.cfg.focal_wt * loss_focal_tmp
-                        + self.cfg.bce_wt * loss_bce_tmp
+                        # + self.cfg.bce_wt * loss_bce_tmp
                         + loss_dice_tmp
                         + loss_iou_tmp
                         + self.cfg.dense_reg_wt * dense_regularization_tmp
@@ -456,7 +456,7 @@ class CamoSam(L.LightningModule):
                     loss_total += loss_tmp[selector].sum() # (num_true_obj)
 
                     loss_focal += loss_focal_tmp[batch_indexing, min_idx][selector].sum()
-                    loss_bce += loss_bce_tmp[batch_indexing, min_idx][selector].sum()
+                    # loss_bce += loss_bce_tmp[batch_indexing, min_idx][selector].sum()
                     loss_dice += loss_dice_tmp[batch_indexing, min_idx][selector].sum()
                     loss_iou += loss_iou_tmp[batch_indexing, min_idx][selector].sum() # [num_true_obj]
                     dense_regularization += dense_regularization_tmp[selector].sum()
@@ -470,13 +470,13 @@ class CamoSam(L.LightningModule):
 
             loss_total = (loss_total) / (total_num_objects)
             avg_focal = (self.cfg.focal_wt * loss_focal) / (total_num_objects)
-            avg_bce = (self.cfg.bce_wt * loss_bce) / (total_num_objects)
+            # avg_bce = (self.cfg.bce_wt * loss_bce) / (total_num_objects)
             avg_dice = loss_dice / (total_num_objects)
             avg_iou = loss_iou / (total_num_objects)
             avg_dense_regularization = (self.cfg.dense_reg_wt * dense_regularization) / (total_num_objects)
 
             self.val_benchmark.append(loss_total.item())
-            self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/bce_loss" : avg_bce, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou, "Loss/val/dense_reg": avg_dense_regularization}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
+            self.log_dict({"Loss/val/total_loss" : loss_total, "Loss/val/focal_loss" : avg_focal, "Loss/val/dice_loss" : avg_dice, "Loss/val/iou_loss" : avg_iou, "Loss/val/dense_reg": avg_dense_regularization}, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bs)
 
             return {'loss': loss_total, 'masks': pred_masks_dict, 'iou': iou_pred_dict} # List([num_true_obj, H, W])
         
