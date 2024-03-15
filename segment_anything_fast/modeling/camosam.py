@@ -349,7 +349,7 @@ class CamoSam(L.LightningModule):
     
 
     def validation_step(self, batch, batch_idx):
-        if self.cfg.stage1:
+        if self.cfg.dataset.stage1:
             memory = Memory(length=2)
             pred_masks_list = []
             if not self.cfg.result_dir:
@@ -481,7 +481,7 @@ class CamoSam(L.LightningModule):
             return {'loss': loss_total, 'masks': pred_masks_dict, 'iou': iou_pred_dict} # List([num_true_obj, H, W])
         
     def on_validation_batch_end(self, output, batch, batch_idx) -> None:
-        if self.cfg.stage1:
+        if self.cfg.dataset.stage1:
             metrics_all = metrics_eval(output, batch['info'])
             self.log_dict(metrics_all, on_step=True, on_epoch=True, sync_dist=True, batch_size=1)
         else:

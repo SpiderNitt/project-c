@@ -16,11 +16,11 @@ from callbacks import WandB_Logger, InferCallback
 from config import cfg
 
 L.seed_everything(2023, workers=True)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+# torch.backends.cudnn.deterministic = True
+# torch.backends.cudnn.benchmark = False
 torch.set_float32_matmul_precision('highest')
-torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(False)
+# torch.backends.cuda.enable_flash_sdp(False)
+# torch.backends.cuda.enable_mem_efficient_sdp(False)
 
 path = Path(f'DAVIS-evaluation/Results')
 path.mkdir(parents=True, exist_ok=True)
