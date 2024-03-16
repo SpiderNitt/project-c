@@ -5,9 +5,7 @@ from lightning.pytorch.callbacks import Callback, ModelSummary, LearningRateMoni
 from segment_anything_fast import sam_model_fast_registry
 from segment_anything_fast.modeling.camosam import CamoSam
 
-import argparse
 import wandb
-from pathlib import Path
 
 from dataloaders.camo_dataset import get_loader
 from dataloaders.vos_dataset import get_loader as get_loader_moca
@@ -22,9 +20,6 @@ torch.set_float32_matmul_precision('highest')
 # torch.backends.cuda.enable_flash_sdp(False)
 # torch.backends.cuda.enable_mem_efficient_sdp(False)
 
-path = Path(f'DAVIS-evaluation/Results')
-path.mkdir(parents=True, exist_ok=True)
-
 ckpt = None
 
 if cfg.model.propagation_ckpt:
@@ -35,7 +30,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model = sam_model_fast_registry[cfg.model.type](checkpoint=cfg.model.checkpoint, cfg=cfg)
 model = CamoSam(cfg, model, ckpt=ckpt)
 
-wandblogger = WandbLogger(project="Proper", save_code=True, settings=wandb.Settings(code_dir="."))
+wandblogger = WandbLogger(project="CVPR_Final", save_code=True, settings=wandb.Settings(code_dir="."))
 
 # torch._dynamo.config.verbose=True # for debugging
 lr_monitor = LearningRateMonitor(logging_interval='epoch')
@@ -48,7 +43,7 @@ trainer = L.Trainer(
     accelerator=device,
     devices=cfg.num_devices,
     callbacks=callbacks,
-    precision="bf16-mixed",
+    precision=cfg.precision,
     logger=wandblogger,
     max_epochs=cfg.num_epochs,
     num_sanity_val_steps=0,

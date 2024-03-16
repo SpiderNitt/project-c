@@ -2,9 +2,9 @@ from omegaconf import OmegaConf
 
 cfg = {
     "description": "Final Affinity model",
-    "precision": "32",
+    "precision": "bf16-mixed",
     "num_devices": 1,
-    "num_epochs": 20,
+    "num_epochs": 15,
     "save_log_weights_interval": 1,
     "train_metric_interval": 1,
     'val_interval': 0.5,
@@ -13,10 +13,6 @@ cfg = {
     "img_size": 1024,
     "out_dir": "/",
     "focal_wt": 20,
-    "bce_wt": 0,
-    "start_warm": 2000,
-    "end_warm": 7000,
-    "top_p": 0.15,
     "num_tokens": 0,
     "dense_reg_wt": 0,
     "result_dir": "",
@@ -24,8 +20,6 @@ cfg = {
         "learning_rate": 4e-4,
         "auto_lr": False,
         "weight_decay": 0.01,
-        "decay_factor": 1/2,
-        "steps": [5, 10],
     },
     "model": {
         "type": "vit_l",

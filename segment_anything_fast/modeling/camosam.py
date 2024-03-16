@@ -68,10 +68,8 @@ class CamoSam(L.LightningModule):
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr= self.cfg.opt.learning_rate if self.cfg.opt.learning_rate else 0,
-            betas=(0.9, 0.999),
-            eps=1e-08,
             weight_decay=self.cfg.opt.weight_decay,
-            amsgrad=False,
+            amsgrad=True,
         )
 
         if self.ckpt and not self.cfg.opt.learning_rate:
@@ -80,7 +78,7 @@ class CamoSam(L.LightningModule):
                 print("!!! Loaded optimizer state dict !!!")
             except:
                 pass
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.cfg.opt.steps, gamma=self.cfg.opt.decay_factor)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.cfg.num_epochs)
         return [optimizer], [scheduler]
 
     def forward(
@@ -350,7 +348,7 @@ class CamoSam(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         if self.cfg.dataset.stage1:
-            memory = Memory(length=2)
+            memory = Memory(length=self.cfg.dataset.num_frames-1)
             pred_masks_list = []
             if not self.cfg.result_dir:
                 result_dir = f'results/{self.logger.version}/{self.current_epoch}/' + batch['info']

@@ -16,11 +16,10 @@ class PropagationModule(nn.Module):
         self.pos_embed_wt_attention = nn.Parameter(torch.zeros(256))
         self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
         
-        self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=256, num_heads=8, dropout=0.1)
+        self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=256, num_heads=1, dropout=0)
         self.values_mlp = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
 
-        self.affinity = MemoryEfficientAffinity(input_dim=256, embed_dim=128, num_heads=4, dropout=0.1)
-
+        self.affinity = MemoryEfficientAffinity(input_dim=256, embed_dim=128, num_heads=1, dropout=0)
         self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
 
         self.layer_norm_input = nn.LayerNorm(256)
@@ -164,6 +163,7 @@ class MemoryEfficientAffinity(nn.Module):
     def __init__(self, input_dim, embed_dim, num_heads, dropout=0.1):
         super().__init__()
         self.embed_dim = embed_dim
+        self.input_dim = input_dim
         self.num_heads = num_heads
         self.dropout = dropout
 
@@ -175,6 +175,24 @@ class MemoryEfficientAffinity(nn.Module):
         self.mk_proj = nn.Linear(input_dim, embed_dim)
         self.mv_proj = nn.Linear(input_dim, embed_dim)
         self.o_proj = nn.Linear(embed_dim, input_dim)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        # Original Transformer initialization, see PyTorch documentation
+        nn.init.xavier_uniform_(self.qv_proj.weight)
+        nn.init.xavier_uniform_(self.qk_proj.weight)
+        nn.init.xavier_uniform_(self.mk_proj.weight)
+        nn.init.xavier_uniform_(self.mv_proj.weight)
+        self.qv_proj.bias.data.fill_(0)
+        self.qk_proj.bias.data.fill_(0)
+        self.mk_proj.bias.data.fill_(0)
+        self.mv_proj.bias.data.fill_(0)
+
+        nn.init.xavier_uniform_(self.o_proj.weight)
+        self.o_proj.bias.data.fill_(0)
+
+        self.norm = nn.LayerNorm(self.input_dim)
     
     def forward(self, q, m):
         batch_size = q.size(0)
@@ -197,12 +215,12 @@ class MemoryEfficientAffinity(nn.Module):
         values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim) # (B, P, 64, 64, embed_dim=128)
         values = self.o_proj(values) # (B, P, 64, 64, embed_dim=256)
 
-        out = qv + values # (B, P, 64, 64, embed_dim=256)
+        out = self.norm(qv + values) # (B, P, 64, 64, embed_dim=256)
 
         return out # (B, P, 64, 64, embed_dim=256)
 
 class Memory():
-    def __init__ (self,length) -> None:
+    def __init__ (self, length) -> None:
         self.embed = []
         self.mask = []
         self.score = []
