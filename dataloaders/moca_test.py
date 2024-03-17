@@ -112,6 +112,8 @@ def get_test_loader():
         batch_size=1,
         shuffle=False,
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        num_workers=4,
+        persistent_workers=True
     )
     return test_loader

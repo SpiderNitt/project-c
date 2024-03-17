@@ -16,15 +16,17 @@ class PropagationModule(nn.Module):
         self.pos_embed_wt_attention = nn.Parameter(torch.zeros(256))
         self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
         
-        self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=256, num_heads=1, dropout=0)
-        self.values_mlp = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
+        self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=256, num_heads=1, dropout=0.1)
+        self.values_mlp = MLP(input_dim=256, hidden_dim=384, dropout=0.1)
 
-        self.affinity = MemoryEfficientAffinity(input_dim=256, embed_dim=128, num_heads=1, dropout=0)
-        self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
+        self.affinity = MemoryEfficientAffinity(input_dim=256, embed_dim=256, num_heads=1, dropout=0.1)
+        self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=384, dropout=0.1)
 
         self.layer_norm_input = nn.LayerNorm(256)
         self.layer_norm_values_1 = nn.LayerNorm(256)
+        self.layer_norm_values_2 = nn.LayerNorm(256)
         self.layer_norm_affinity = nn.LayerNorm(256)
+        self.final_norm = nn.LayerNorm(256)
 
     def forward(self, embeddings: dict, pos_embed: torch.Tensor) -> torch.Tensor:
         """
@@ -51,9 +53,10 @@ class PropagationModule(nn.Module):
         prev_frames_embeddings_0 = self.layer_norm_input(prev_frames_embeddings_0)
 
         values = self.attention(curr_embeddings_0, prev_frames_embeddings_0, mask_embeddings) # (B, num_objects=3, 64, 64, 256)
+        values = self.layer_norm_values_1(values)
         values_shortcut = values
         values = self.values_mlp(values)
-        values = self.layer_norm_values_1(values + values_shortcut) # (B, num_objects=3, 64, 64, 256)
+        values = self.layer_norm_values_2(values + values_shortcut) # (B, num_objects=3, 64, 64, 256)
 
         curr_embeddings_1 = curr_embeddings + self.pos_embed_wt_affinity * pos_embed
         prev_frames_embeddings_1 = prev_frames_embeddings + self.pos_embed_wt_affinity * pos_embed
@@ -67,9 +70,10 @@ class PropagationModule(nn.Module):
         prev_frames_embeddings_1 = prev_frames_embeddings_1.unsqueeze(2).repeat(1, 1, mask_embeddings.shape[2], 1, 1, 1) # (B, num_frames=2, num_objects=3, 64, 64, 256)
         key = prev_frames_embeddings_1 + mask_embeddings # (B, num_frames=2, num_objects=3, 64, 64, 512)
 
-        dense_embeddings = self.affinity(query, key) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
+        dense_embeddings_1 = self.affinity(query, key) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
         
-        dense_embeddings = self.dense_embedding_linear(dense_embeddings) # (B, num_objects=3, 64, 64, 256)
+        dense_embeddings = self.dense_embedding_linear(dense_embeddings_1) # (B, num_objects=3, 64, 64, 256)
+        dense_embeddings = self.final_norm(dense_embeddings + dense_embeddings_1)
         sparse_embeddings = torch.empty((*dense_embeddings.shape[:2], 0, 256), device=dense_embeddings.device) # (B, num_objects=3, 1, 256)
 
         return (
@@ -128,13 +132,13 @@ class MemoryEfficientAttention(nn.Module):
         # Original Transformer initialization, see PyTorch documentation
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.k_proj.weight)
-        nn.init.xavier_uniform_(self.v_proj.weight)
+        # nn.init.xavier_uniform_(self.v_proj.weight)
         self.q_proj.bias.data.fill_(0)
         self.k_proj.bias.data.fill_(0)
-        self.v_proj.bias.data.fill_(0)
+        # self.v_proj.bias.data.fill_(0)
 
-        nn.init.xavier_uniform_(self.o_proj.weight)
-        self.o_proj.bias.data.fill_(0)
+        # nn.init.xavier_uniform_(self.o_proj.weight)
+        # self.o_proj.bias.data.fill_(0)
     
     def forward(self, q, k, v):
         batch_size = q.size(0)
@@ -180,17 +184,17 @@ class MemoryEfficientAffinity(nn.Module):
 
     def _reset_parameters(self):
         # Original Transformer initialization, see PyTorch documentation
-        nn.init.xavier_uniform_(self.qv_proj.weight)
+        # nn.init.xavier_uniform_(self.qv_proj.weight)
         nn.init.xavier_uniform_(self.qk_proj.weight)
         nn.init.xavier_uniform_(self.mk_proj.weight)
-        nn.init.xavier_uniform_(self.mv_proj.weight)
-        self.qv_proj.bias.data.fill_(0)
+        # nn.init.xavier_uniform_(self.mv_proj.weight)
+        # self.qv_proj.bias.data.fill_(0)
         self.qk_proj.bias.data.fill_(0)
         self.mk_proj.bias.data.fill_(0)
-        self.mv_proj.bias.data.fill_(0)
+        # self.mv_proj.bias.data.fill_(0)
 
-        nn.init.xavier_uniform_(self.o_proj.weight)
-        self.o_proj.bias.data.fill_(0)
+        # nn.init.xavier_uniform_(self.o_proj.weight)
+        # self.o_proj.bias.data.fill_(0)
 
         self.norm = nn.LayerNorm(self.input_dim)
     

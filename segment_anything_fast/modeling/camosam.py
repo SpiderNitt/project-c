@@ -78,7 +78,7 @@ class CamoSam(L.LightningModule):
                 print("!!! Loaded optimizer state dict !!!")
             except:
                 pass
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.cfg.num_epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.cfg.num_epochs, eta_min=self.cfg.opt.min_learning_rate)
         return [optimizer], [scheduler]
 
     def forward(
