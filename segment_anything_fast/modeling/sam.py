@@ -68,7 +68,7 @@ class Sam(nn.Module):
     
     def getPropEmbeddings(self, image_embeddings, batched_input, low_res_pred, multimask_output=True, t=1):
         prev_masks = batched_input["prev_masks"][:, :(1 if self.cfg.dataset.stage1 else (self.cfg.dataset.num_frames-1))] # (B, F=2/1, P=3, 256, 256)
-        low_res_pred = (low_res_pred > self.mask_threshold).float() # (B, t-1, P=3, 256, 256)
+        low_res_pred = (low_res_pred > self.mask_threshold).to(dtype=low_res_pred.dtype) # (B, t-1, P=3, 256, 256)
         prev_masks = torch.cat([prev_masks, low_res_pred], dim=1) # (B, F+t-1, P=3, 256, 256)
 
         prev_masks = prev_masks.view(-1, 1, *prev_masks.shape[-2:])

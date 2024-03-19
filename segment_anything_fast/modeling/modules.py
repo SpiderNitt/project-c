@@ -17,16 +17,15 @@ class PropagationModule(nn.Module):
         self.pos_embed_wt_affinity = nn.Parameter(torch.zeros(256))
         
         self.attention = MemoryEfficientAttention(input_dim=256, embed_dim=256, num_heads=1, dropout=0.1)
-        self.values_mlp = MLP(input_dim=256, hidden_dim=384, dropout=0.1)
+        self.values_mlp = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
 
-        self.affinity = MemoryEfficientAffinity(input_dim=256, embed_dim=256, num_heads=1, dropout=0.1)
-        self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=384, dropout=0.1)
+        self.affinity = MemoryEfficientAffinity(input_dim=256, embed_dim=128, num_heads=1, dropout=0.1)
+        
+        self.dense_embedding_linear = MLP(input_dim=256, hidden_dim=512, dropout=0.25)
 
         self.layer_norm_input = nn.LayerNorm(256)
         self.layer_norm_values_1 = nn.LayerNorm(256)
-        self.layer_norm_values_2 = nn.LayerNorm(256)
         self.layer_norm_affinity = nn.LayerNorm(256)
-        self.final_norm = nn.LayerNorm(256)
 
     def forward(self, embeddings: dict, pos_embed: torch.Tensor) -> torch.Tensor:
         """
@@ -53,10 +52,9 @@ class PropagationModule(nn.Module):
         prev_frames_embeddings_0 = self.layer_norm_input(prev_frames_embeddings_0)
 
         values = self.attention(curr_embeddings_0, prev_frames_embeddings_0, mask_embeddings) # (B, num_objects=3, 64, 64, 256)
-        values = self.layer_norm_values_1(values)
         values_shortcut = values
         values = self.values_mlp(values)
-        values = self.layer_norm_values_2(values + values_shortcut) # (B, num_objects=3, 64, 64, 256)
+        values = self.layer_norm_values_1(values + values_shortcut) # (B, num_objects=3, 64, 64, 256)
 
         curr_embeddings_1 = curr_embeddings + self.pos_embed_wt_affinity * pos_embed
         prev_frames_embeddings_1 = prev_frames_embeddings + self.pos_embed_wt_affinity * pos_embed
@@ -70,10 +68,9 @@ class PropagationModule(nn.Module):
         prev_frames_embeddings_1 = prev_frames_embeddings_1.unsqueeze(2).repeat(1, 1, mask_embeddings.shape[2], 1, 1, 1) # (B, num_frames=2, num_objects=3, 64, 64, 256)
         key = prev_frames_embeddings_1 + mask_embeddings # (B, num_frames=2, num_objects=3, 64, 64, 512)
 
-        dense_embeddings_1 = self.affinity(query, key) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
+        dense_embeddings = self.affinity(query, key) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
         
-        dense_embeddings = self.dense_embedding_linear(dense_embeddings_1) # (B, num_objects=3, 64, 64, 256)
-        dense_embeddings = self.final_norm(dense_embeddings + dense_embeddings_1)
+        dense_embeddings = self.dense_embedding_linear(dense_embeddings) # (B, num_objects=3, 64, 64, 256)
         sparse_embeddings = torch.empty((*dense_embeddings.shape[:2], 0, 256), device=dense_embeddings.device) # (B, num_objects=3, 1, 256)
 
         return (
@@ -120,9 +117,9 @@ class MemoryEfficientAttention(nn.Module):
 
         # Stack all weight matrices 1...h together for efficiency
         # Note that in many implementations you see "bias=False" which is optional
-        self.q_proj = nn.Linear(input_dim, embed_dim)
-        self.k_proj = nn.Linear(input_dim, embed_dim)
-        self.v_proj = nn.Linear(input_dim, embed_dim)
+        self.q_proj = nn.Linear(input_dim, embed_dim, bias=False)
+        self.k_proj = nn.Linear(input_dim, embed_dim, bias=False)
+        self.v_proj = nn.Linear(input_dim, embed_dim, bias=False)
 
         self.o_proj = nn.Linear(embed_dim, input_dim)
 
@@ -132,13 +129,10 @@ class MemoryEfficientAttention(nn.Module):
         # Original Transformer initialization, see PyTorch documentation
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.k_proj.weight)
-        # nn.init.xavier_uniform_(self.v_proj.weight)
-        self.q_proj.bias.data.fill_(0)
-        self.k_proj.bias.data.fill_(0)
-        # self.v_proj.bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.v_proj.weight)
 
-        # nn.init.xavier_uniform_(self.o_proj.weight)
-        # self.o_proj.bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.o_proj.weight)
+        self.o_proj.bias.data.fill_(0)
     
     def forward(self, q, k, v):
         batch_size = q.size(0)
@@ -154,7 +148,11 @@ class MemoryEfficientAttention(nn.Module):
         k = k.reshape(batch_size, seq_len*num_frames, self.num_heads, self.key_head_dim).transpose(1, 2) # (B, num_heads, 64*64*2, self.head_dim=32)
         v = v.permute(0, 1, 3, 4, 5, 2).reshape(batch_size, seq_len*num_frames, self.num_heads, self.value_head_dim * num_objects).transpose(1, 2) # (B, num_heads, 64*64*2, self.head_dim*num_obj=3)
 
-        values = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout) # (B, num_heads, 64*64, self.head_dim*num_obj=3)
+        if self.training:
+            values = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout) # (B, num_heads, 64*64, self.head_dim*num_obj=3)
+        else:
+            values = F.scaled_dot_product_attention(q, k, v, dropout_p=0)
+        
         values = values.transpose(1, 2)
         values = values.reshape(batch_size, 64, 64, self.num_heads * self.value_head_dim, num_objects)
         values = values.permute(0, 4, 1, 2, 3) # (B, num_objects=3, 64, 64, [num_heads * self.head_dim] = 256)
@@ -175,26 +173,26 @@ class MemoryEfficientAffinity(nn.Module):
         # Note that in many implementations you see "bias=False" which is optional
         self.qv_proj = nn.Linear(input_dim, input_dim)
 
-        self.qk_proj = nn.Linear(input_dim, embed_dim)
-        self.mk_proj = nn.Linear(input_dim, embed_dim)
-        self.mv_proj = nn.Linear(input_dim, embed_dim)
+        self.qk_proj = nn.Linear(input_dim, embed_dim, bias=False)
+        self.mk_proj = nn.Linear(input_dim, embed_dim, bias=False)
+        self.mv_proj = nn.Linear(input_dim, embed_dim, bias=False)
         self.o_proj = nn.Linear(embed_dim, input_dim)
 
         self._reset_parameters()
 
     def _reset_parameters(self):
         # Original Transformer initialization, see PyTorch documentation
-        # nn.init.xavier_uniform_(self.qv_proj.weight)
+        nn.init.xavier_uniform_(self.qv_proj.weight)
         nn.init.xavier_uniform_(self.qk_proj.weight)
         nn.init.xavier_uniform_(self.mk_proj.weight)
-        # nn.init.xavier_uniform_(self.mv_proj.weight)
-        # self.qv_proj.bias.data.fill_(0)
-        self.qk_proj.bias.data.fill_(0)
-        self.mk_proj.bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.mv_proj.weight)
+        self.qv_proj.bias.data.fill_(0)
+        # self.qk_proj.bias.data.fill_(0)
+        # self.mk_proj.bias.data.fill_(0)
         # self.mv_proj.bias.data.fill_(0)
 
-        # nn.init.xavier_uniform_(self.o_proj.weight)
-        # self.o_proj.bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.o_proj.weight)
+        self.o_proj.bias.data.fill_(0)
 
         self.norm = nn.LayerNorm(self.input_dim)
     
@@ -213,8 +211,12 @@ class MemoryEfficientAffinity(nn.Module):
 
         mk = mk.transpose(1, 2).reshape(batch_size * num_objects, seq_len*num_frames, self.num_heads, self.embed_dim // self.num_heads).transpose(1, 2) # (B*P, F*64*64, embed_dim=128)
         mv = mv.transpose(1, 2).reshape(batch_size * num_objects, seq_len*num_frames, self.num_heads, self.embed_dim // self.num_heads).transpose(1, 2) # (B*P, F*64*64, embed_dim=128)
-
-        values = F.scaled_dot_product_attention(qk, mk, mv, dropout_p=self.dropout) # (B*P, 64*64, embed_dim=128)
+        
+        if self.training:
+            values = F.scaled_dot_product_attention(qk, mk, mv, dropout_p=self.dropout) # (B*P, 64*64, embed_dim=128)
+        else:
+            values = F.scaled_dot_product_attention(qk, mk, mv, dropout_p=0)
+        
         values = values.transpose(1, 2)
         values = values.reshape(batch_size, num_objects, 64, 64, self.embed_dim) # (B, P, 64, 64, embed_dim=128)
         values = self.o_proj(values) # (B, P, 64, 64, embed_dim=256)

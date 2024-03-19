@@ -396,7 +396,9 @@ class CamoSam(L.LightningModule):
                 masks.putpalette(batch['palette'])
                 masks.save(result_dir + '/' f'{frame_num}.png')
 
-                memory.add(current_frame_embeddings.squeeze(), (low_res_masks > 0).squeeze(1).float(), max_iou.mean().item())
+                low_res_masks = (low_res_masks > 0).squeeze(1).to(dtype=low_res_masks.dtype)
+
+                memory.add(current_frame_embeddings.squeeze(), low_res_masks, max_iou.mean().item())
             return pred_masks_list
         else:
             img_embeddings = self.model.getImageEmbeddings(batch['image']) # (B, F=3, 256, 64, 64)
